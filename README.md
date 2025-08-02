@@ -16,7 +16,6 @@
 |--------|-------|---------------|--------|
 | **LocoDex Deep Search** | **9/10** | **3 minutes** | **Gemma 3 12B (Local)** |
 | Grok 3 Deep Search | 10/10 | ~5 minutes | Grok 3 (Cloud) |
-| GPT-4 Standard | 7/10 | ~2 minutes | GPT-4 (Cloud) |
 
 > **🎯 Accuracy Rate: 95%+** - Exceptional research quality with local models
 
