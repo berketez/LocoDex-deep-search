@@ -109,9 +109,10 @@ python server.py
 
 ### Recommended Models
 
-- **Gemma 3 12B** - Best balance of speed/quality (16GB VRAM)
-- **Llama 3.1 8B** - Faster option (12GB VRAM)  
-- **Mixtral 8x7B** - Highest quality (24GB VRAM)
+- **Gemma 3 12B** - Fast and lightweight (16GB VRAM)
+- **Gemma 3 27B** - Best balance of speed and quality (24GB VRAM)
+- **Gemma 4 31B** - Latest generation, frontier-level reasoning (24GB+ VRAM)
+- **GLM-4 32B** - GPT-4o competitive, strong multilingual and code (24GB+ VRAM)
 
 ## 📡 API Usage
 
