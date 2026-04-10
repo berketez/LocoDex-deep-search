@@ -1,5 +1,6 @@
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
 import sys
 import os
@@ -10,6 +11,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from real_deep_research import RealDeepResearcher
 from smart_multilingual_research import SmartMultilingualResearcher
+from utils.research_cache import research_cache
+from utils.exporter import to_markdown, to_html
 import asyncio
 import logging
 
@@ -304,8 +307,19 @@ async def research_http(request: ResearchRequest):
     Conducts deep research on a given topic using the DeepResearcher agent via HTTP.
     """
     try:
+        # Check cache first
+        cached = research_cache.get(request.topic)
+        if cached:
+            logger.info(f"HTTP cache hit for topic: {request.topic}")
+            return cached
+
         answer = await researcher.research_topic(request.topic)
-        return {"status": "success", "answer": answer}
+        result = {"status": "success", "answer": answer}
+
+        # Cache the result
+        research_cache.set(request.topic, result)
+
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -388,14 +402,26 @@ async def research_websocket(websocket: WebSocket):
             )
 
             try:
+                # Check cache first
+                cached = research_cache.get(topic)
+                if cached:
+                    logger.info(f"Cache hit for topic: {topic}")
+                    await websocket.send_json({"type": "progress", "step": 1.0, "message": "Cache'den sonuc bulundu!"})
+                    await websocket.send_json({"type": "result", "data": cached.get("answer", "")})
+                    continue
+
                 # Model yüklendi bildirimi gönder
                 await websocket.send_json({"type": "progress", "step": 0, "message": f"🤖 Model hazır: {model_name} ({model_source})"})
-                
-                # Araştırma başlıyor bildirimi  
+
+                # Araştırma başlıyor bildirimi
                 await websocket.send_json({"type": "progress", "step": 0.05, "message": f"🚀 '{topic}' konusu için akıllı çok dilli araştırma başlatılıyor..."})
-                
+
                 # Yeni run_research metodunu çağır
                 answer = await researcher.run_research(topic)
+
+                # Cache the result
+                research_cache.set(topic, {"answer": answer, "status": "success"})
+
                 await websocket.send_json({"type": "result", "data": answer})
                 
             except Exception as e:
@@ -417,6 +443,43 @@ async def research_websocket(websocket: WebSocket):
         if not websocket.client_state == "DISCONNECTED":
             await websocket.close()
             logger.info("WebSocket connection closed.")
+
+@app.get("/export/{fmt}")
+async def export_research(fmt: str, topic: str = Query(..., description="Research topic to export")):
+    """Export a cached research result as Markdown or HTML.
+
+    ``fmt`` must be ``"markdown"`` or ``"html"``.
+    """
+    cached = research_cache.get(topic)
+    if cached is None:
+        return PlainTextResponse(
+            f"No cached result found for topic: {topic}", status_code=404
+        )
+
+    if fmt == "markdown":
+        md = to_markdown(topic, cached)
+        return PlainTextResponse(md, media_type="text/markdown")
+    elif fmt == "html":
+        html = to_html(topic, cached)
+        return HTMLResponse(html)
+    else:
+        return PlainTextResponse(
+            f"Unsupported format: {fmt}. Use 'markdown' or 'html'.", status_code=400
+        )
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    """Return basic cache statistics."""
+    return research_cache.stats()
+
+
+@app.delete("/cache")
+async def clear_cache():
+    """Purge all cached research results."""
+    research_cache.clear()
+    return {"status": "success", "message": "Cache cleared"}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)

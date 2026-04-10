@@ -62,6 +62,9 @@ config/secrets.json
 research_results/
 *.md.backup
 
+# Research cache database
+research_cache.db
+
 # Docker
 .dockerignore
 

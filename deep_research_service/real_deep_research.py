@@ -5,6 +5,8 @@ from datetime import datetime
 import os
 import logging
 
+from utils.rate_limiter import rate_limiter, extract_domain
+
 logger = logging.getLogger(__name__)
 
 class RealDeepResearcher:
@@ -439,6 +441,7 @@ Karşılaştırmalar: [oranlar ve trendler]
             })
             
             async with aiohttp.ClientSession() as session:
+                await rate_limiter.wait(extract_domain(url))
                 async with session.get(url, timeout=10) as response:
                     if response.status == 200:
                         html = await response.text()

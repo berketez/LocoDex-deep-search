@@ -1,4 +1,4 @@
-# 🔍 LocoDex Deep Search
+# 🔍 LocoDex Deep Search v1.1
 
 > **High-Performance Local AI Research Service**  
 > Outperforming commercial solutions with local models
@@ -28,6 +28,12 @@
 - 🧠 **Smart AI Reasoning** - Multi-step research with local LLMs
 - 📊 **Quality Scoring** - Automatic content validation
 - 🐳 **Docker Ready** - One-command deployment
+
+## 🆕 What's New in v1.1
+
+- **Per-Domain Rate Limiter** — Async rate limiting prevents hammering the same domain. Default: max 1 request per 2 seconds per host. No more getting blocked by aggressive crawling.
+- **Research Cache (SQLite)** — Results are cached locally for 24 hours. Repeat queries return instantly without burning compute or network time. Zero new dependencies (uses stdlib `sqlite3`).
+- **Export API (Markdown & HTML)** — New REST endpoint `GET /export/{format}?topic=...` lets you export any cached research result as clean Markdown or a self-contained HTML page.
 
 ## 🎯 Why Choose LocoDex Deep Search?
 
@@ -136,6 +142,22 @@ ws.onmessage = (event) => {
 curl -X POST http://localhost:8001/research \
   -H "Content-Type: application/json" \
   -d '{"topic": "Climate Change Solutions", "model": "gemma-3-12b"}'
+```
+
+### Export Research Results (v1.1)
+
+```bash
+# Export as Markdown
+curl "http://localhost:8001/export/markdown?topic=Climate%20Change%20Solutions"
+
+# Export as HTML
+curl "http://localhost:8001/export/html?topic=Climate%20Change%20Solutions" -o report.html
+
+# View cache statistics
+curl http://localhost:8001/cache/stats
+
+# Clear all cached results
+curl -X DELETE http://localhost:8001/cache
 ```
 
 ## 🏗️ Architecture

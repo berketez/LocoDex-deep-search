@@ -8,6 +8,8 @@ import re
 from typing import List, Dict, Any
 import time
 
+from utils.rate_limiter import rate_limiter, extract_domain
+
 logger = logging.getLogger(__name__)
 
 class SmartMultilingualResearcher:
@@ -395,6 +397,7 @@ Write only the queries, one per line, no explanations.
             })
             
             async with aiohttp.ClientSession() as session:
+                await rate_limiter.wait(extract_domain(url))
                 async with session.get(url, timeout=15) as response:
                     if response.status == 200:
                         html = await response.text()
