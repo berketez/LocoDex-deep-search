@@ -120,6 +120,25 @@ python server.py
 - **Gemma 4 31B** - Latest generation, frontier-level reasoning (24GB+ VRAM)
 - **GLM-4 32B** - GPT-4o competitive, strong multilingual and code (24GB+ VRAM)
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RESEARCH_ENGINE` | `verified` | Research engine: `verified` (date-aware, claim-verified) or `smart` (legacy) |
+| `OLLAMA_HOST_IP` | auto | Model server host; auto-resolves `host.docker.internal` → `127.0.0.1` |
+| `RESEARCH_OUTPUT_DIR` | Desktop / `research_results` | Where report `.md` files are saved |
+| `BIND_HOST` | `0.0.0.0` | Server bind address; use `127.0.0.1` to restrict to local access |
+
+### Reading the Report
+
+Every research run produces a Markdown report with:
+
+- **Overall confidence score** in the header, plus a staleness warning when the newest verified source is older than the topic requires
+- **Key Findings** — one line per verified finding: statement, confidence label (`high ≥85%`, `medium ≥60%`, `low` below), number of independent sources, newest publication date, and `⚠️` when sources contradict each other
+- **Contradictions & Recency** — which source says what, which is newer/more reliable, and which information is likely outdated
+- **Source table** — every source with its publication date, how the date was extracted (JSON-LD, meta tag, URL...), and its reliability score
+- **Methodology** — how the numbers were computed, so results are auditable
+
 ## 📡 API Usage
 
 ### WebSocket Research
