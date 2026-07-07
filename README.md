@@ -1,32 +1,38 @@
 # 🔍 LocoDex Deep Search v1.1
 
-> **High-Performance Local AI Research Service**  
-> Outperforming commercial solutions with local models
+> **Local AI Research Service**
+> A privacy-first, locally-runnable alternative to commercial deep-research tools.
 
 [![GitHub](https://img.shields.io/badge/GitHub-berketez/LocoDex--deep--search-blue?style=flat-square&logo=github)](https://github.com/berketez/LocoDex-deep-search)
 [![Python](https://img.shields.io/badge/Python-3.11+-green?style=flat-square&logo=python)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?style=flat-square&logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-## 🚀 Performance Benchmark
+## 🚀 Qualitative Comparison (Subjective)
 
-**Tested on Apple M4 Max (32 GPU cores, 16GB VRAM)**
+**Test environment: Apple M4 Max (32 GPU cores, 16GB VRAM)**
 
-| System | Score | Response Time | Model |
-|--------|-------|---------------|--------|
-| **LocoDex Deep Search** | **9/10** | **3 minutes** | **Gemma 3 12B (Local)** |
-| Grok 3 Deep Search | 10/10 | ~5 minutes | Grok 3 (Cloud) |
+The numbers below are an *internal subjective evaluation* on a small set of personal test queries — they are **not the result of a rigorous, reproducible benchmark** (no public test set, no annotator panel, no statistical sample size). They are shared only to give a rough sense of the system's qualitative behaviour next to a commercial baseline.
 
-> **🎯 Accuracy Rate: 95%+** - Exceptional research quality with local models
+| System | Subjective Score | Wall-clock Time | Model |
+|--------|------------------|-----------------|--------|
+| LocoDex Deep Search | ~9 / 10 (subjective) | ~3 minutes | Gemma 3 12B (local) |
+| Grok 3 Deep Search  | ~10 / 10 (subjective) | ~5 minutes | Grok 3 (cloud) |
+
+> **Accuracy claims:** Any percentage-style accuracy figure (e.g. "≈95%") in earlier versions of this README was *anecdotal* and has been removed. A rigorous benchmark on a public dataset (HotpotQA / GAIA / 2WikiMultihopQA) has not yet been performed. See `deep_research_service/evals.py` for the LLM-as-a-Judge harness intended for such a benchmark.
+
+> **No "outperforming" claim:** LocoDex is a free, fully-local research pipeline — it is *not* meant to outperform Grok 3 in absolute quality. Its value proposition is **privacy + local execution + zero API cost**, not raw answer quality.
 
 ## ✨ Key Features
 
 - 🏠 **100% Local Processing** - No API keys, no data leaks
-- 🌐 **Multilingual Research** - Smart language detection and processing  
-- 🔍 **Advanced Web Search** - Intelligent source verification
+- 📅 **Date-Aware Research** - Publication dates are extracted deterministically from pages (JSON-LD → meta tags → `<time>` → URL → text); stale sources are penalized according to how time-sensitive the topic is
+- ⚖️ **Claim-Level Cross-Verification** - Claims are extracted from every source and corroborated across independent domains; contradictions are detected and resolved in favor of newer + more reliable sources
+- 📊 **Computed Confidence Scores** - Every key finding carries a confidence score calculated in Python (source count × reliability × freshness × contradictions), not invented by the LLM
+- 🔄 **Real Iterative Research** - Unanswered sub-questions trigger additional search rounds automatically
+- 🌐 **Multilingual Research** - Smart language detection (diacritic-free Turkish included)
+- 🔍 **Multi-Engine Search** - DuckDuckGo text + news (time-filtered) with Google fallback, domain diversity enforcement
 - ⚡ **WebSocket Real-time** - Live progress updates
-- 🧠 **Smart AI Reasoning** - Multi-step research with local LLMs
-- 📊 **Quality Scoring** - Automatic content validation
 - 🐳 **Docker Ready** - One-command deployment
 
 ## 🆕 What's New in v1.1
@@ -167,37 +173,47 @@ curl -X DELETE http://localhost:8001/cache
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │   Web Client    │    │  FastAPI Server  │    │  Local AI Model │
 │                 │◄──►│                  │◄──►│                 │
-│  (WebSocket)    │    │   (Port 8001)    │    │ (LM Studio/etc) │
+│  (WebSocket)    │    │   (Port 8001)    │    │ (Ollama/LMS)    │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
                                 │
                                 ▼
-                       ┌──────────────────┐
-                       │   Web Search     │
-                       │   (Tavily API)   │
-                       └──────────────────┘
+                  ┌───────────────────────────┐
+                  │  Verified Research Engine  │
+                  └───────────────────────────┘
 ```
+
+### Verified Research Pipeline (`verified_research.py`)
+
+1. **Question analysis** — topic type, time sensitivity (`critical` / `moderate` / `low`), sub-questions
+2. **Multi-engine search** — DuckDuckGo text + news (time-filtered for hot topics), Google fallback, per-domain caps
+3. **Content + date extraction** — pages fetched in parallel; publication date extracted deterministically from the page itself
+4. **Claim extraction** — structured claims per source (single JSON-mode LLM call per source)
+5. **Cross-verification** — claims merged across sources; confidence computed in Python from independent-source count, source reliability (domain prior + LLM assessment), freshness, and contradictions
+6. **Gap-driven iteration** — sub-questions without confident answers trigger up to 2 extra search rounds
+7. **Structured report** — direct answer, per-finding confidence labels, contradiction & recency analysis, dated source table, methodology
+
+The legacy engine is still available: set `RESEARCH_ENGINE=smart` to use it.
 
 ## 🔬 Technical Specifications
 
 - **Framework:** FastAPI + WebSocket
-- **AI Integration:** LiteLLM (multi-provider support)  
-- **Search Engine:** Tavily API (optional)
+- **Search Engines:** DuckDuckGo (`ddgs`, text + news) with Google fallback; Tavily optional
 - **Languages:** Python 3.11+
 - **Deployment:** Docker, Kubernetes ready
 - **Memory:** Optimized for 16GB+ systems
 
-## 📈 Benchmarks & Tests
+## 📈 Confidence Scoring (How Reliability Is Estimated)
 
-### Research Quality Test Results
+LocoDex does **not** claim a fixed accuracy percentage. Instead, every finding in a report carries a confidence score computed transparently:
 
-**Topic:** "Quantum Computing Applications in Drug Discovery"
+```
+source_reliability = 0.6 × domain_prior + 0.4 × LLM_content_assessment
+base_confidence    = 1 - Π(1 - reliability_i × 0.8)   over independent domains
+freshness_factor   = applied when the claim is time-sensitive
+contradiction      = capped at 40% when contradicted by a newer/stronger source
+```
 
-| Metric | LocoDex Score | Industry Average |
-|--------|---------------|------------------|
-| **Factual Accuracy** | 96% | 78% |
-| **Source Reliability** | 94% | 72% |
-| **Completeness** | 92% | 65% |
-| **Response Speed** | 3 min | 8 min |
+Labels: **≥85% high confidence**, **≥60% medium**, below that **low** — printed next to every finding together with the number of independent sources and the newest publication date. A report-level freshness warning is emitted when the newest verified source is older than the topic's staleness threshold.
 
 ### Performance on Different Hardware
 

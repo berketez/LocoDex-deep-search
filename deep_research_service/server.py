@@ -11,10 +11,25 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from real_deep_research import RealDeepResearcher
 from smart_multilingual_research import SmartMultilingualResearcher
+from verified_research import VerifiedDeepResearcher
 from utils.research_cache import research_cache
 from utils.exporter import to_markdown, to_html
 import asyncio
 import logging
+
+# Araştırma motoru seçimi: "verified" (varsayılan) veya "smart" (eski motor)
+RESEARCH_ENGINE = os.environ.get("RESEARCH_ENGINE", "verified").lower()
+
+
+def create_researcher(model_name, model_source, websocket):
+    """Aktif araştırma motorunu döndürür."""
+    if RESEARCH_ENGINE == "smart":
+        return SmartMultilingualResearcher(
+            model_name=model_name, model_source=model_source, websocket=websocket
+        )
+    return VerifiedDeepResearcher(
+        model_name=model_name, model_source=model_source, websocket=websocket
+    )
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -298,29 +313,36 @@ DEFAULT_ANSWER_MODEL = "lmstudio://localhost:1234/v1"
 print("INFO: LocoDex Deep Research - Tamamen Lokal Mod")
 print("INFO: API anahtarları gereksiz - sadece lokal modeller kullanılıyor")
 
-# Paylaşılan researcher
-researcher = None
+class _NullWebSocket:
+    """HTTP isteklerinde progress mesajlarını yutan sahte websocket."""
+
+    async def send_json(self, _data):
+        pass
+
 
 @app.post("/research")
 async def research_http(request: ResearchRequest):
     """
-    Conducts deep research on a given topic using the DeepResearcher agent via HTTP.
+    Conducts deep research on a given topic via HTTP (no streaming progress).
     """
     try:
-        # Check cache first
+        # Önce cache'e bak
         cached = research_cache.get(request.topic)
         if cached:
             logger.info(f"HTTP cache hit for topic: {request.topic}")
             return cached
 
-        answer = await researcher.research_topic(request.topic)
+        researcher = create_researcher(
+            model_name=request.model or "default",
+            model_source="Unknown",
+            websocket=_NullWebSocket(),
+        )
+        answer = await researcher.run_research(request.topic)
         result = {"status": "success", "answer": answer}
-
-        # Cache the result
         research_cache.set(request.topic, result)
-
         return result
     except Exception as e:
+        logger.error(f"HTTP research error: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 @app.websocket("/research_ws")
@@ -391,11 +413,11 @@ async def research_websocket(websocket: WebSocket):
             logger.info(f"Skipping model test, proceeding with research for: {model_info}")
             logger.info(f"Processing research for topic: '{topic}' with model: {model_name} from {model_source}")
 
-            # Smart multilingual research bildirimi
-            await websocket.send_json({"type": "progress", "step": 0, "message": "🌐 Akıllı çok dilli araştırma başlıyor..."})
+            # Araştırma motoru bildirimi
+            engine_label = "🔎 Doğrulamalı derin araştırma" if RESEARCH_ENGINE != "smart" else "🌐 Akıllı çok dilli araştırma"
+            await websocket.send_json({"type": "progress", "step": 0, "message": f"{engine_label} başlıyor..."})
 
-            # Yeni akıllı çok dilli sistem kullan
-            researcher = SmartMultilingualResearcher(
+            researcher = create_researcher(
                 model_name=model_name,
                 model_source=model_source,
                 websocket=websocket
@@ -413,10 +435,6 @@ async def research_websocket(websocket: WebSocket):
                 # Model yüklendi bildirimi gönder
                 await websocket.send_json({"type": "progress", "step": 0, "message": f"🤖 Model hazır: {model_name} ({model_source})"})
 
-                # Araştırma başlıyor bildirimi
-                await websocket.send_json({"type": "progress", "step": 0.05, "message": f"🚀 '{topic}' konusu için akıllı çok dilli araştırma başlatılıyor..."})
-
-                # Yeni run_research metodunu çağır
                 answer = await researcher.run_research(topic)
 
                 # Cache the result
@@ -440,9 +458,12 @@ async def research_websocket(websocket: WebSocket):
             await keepalive
         except asyncio.CancelledError:
             logger.info("Keepalive task cancelled.")
-        if not websocket.client_state == "DISCONNECTED":
+        try:
             await websocket.close()
             logger.info("WebSocket connection closed.")
+        except RuntimeError:
+            # Bağlantı zaten kopmuşsa close() istisna üretebilir
+            pass
 
 @app.get("/export/{fmt}")
 async def export_research(fmt: str, topic: str = Query(..., description="Research topic to export")):
@@ -482,4 +503,6 @@ async def clear_cache():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Docker'da 0.0.0.0 gerekir; doğrudan host üzerinde çalıştırırken
+    # BIND_HOST=127.0.0.1 ile yalnızca yerel erişime kapatılabilir.
+    uvicorn.run(app, host=os.environ.get("BIND_HOST", "0.0.0.0"), port=8001)

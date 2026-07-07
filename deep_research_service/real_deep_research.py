@@ -7,6 +7,14 @@ import logging
 
 from utils.rate_limiter import rate_limiter, extract_domain
 
+# Merkezi sabitler: hem real_deep_research hem smart_multilingual tarafından
+# kullanılır; aynı kavramın farklı dosyalarda farklı değer almasını önler.
+try:
+    from research_constants import RELIABILITY_THRESHOLD_100
+except ImportError:
+    # Direct script çalıştırıldığında relative path için fallback
+    from .research_constants import RELIABILITY_THRESHOLD_100
+
 logger = logging.getLogger(__name__)
 
 class RealDeepResearcher:
@@ -787,8 +795,13 @@ Sadece konuyla ilgili bilgileri özetle, kaynak adını da belirt.
         # 4. Kaynakları güvenilirlik skoruna göre sırala
         research_data.sort(key=lambda x: x['reliability_score'], reverse=True)
         
-        # Düşük güvenilirlik skorlu kaynakları filtrele (30'un altı)
-        filtered_research_data = [item for item in research_data if item['reliability_score'] >= 30]
+        # Düşük güvenilirlik skorlu kaynakları filtrele
+        # Eşik: research_constants.RELIABILITY_THRESHOLD_NORMALIZED * 100
+        # (varsayılan 0.30 -> 30/100). smart_multilingual ile aynı kaynaktan gelir.
+        filtered_research_data = [
+            item for item in research_data
+            if item['reliability_score'] >= RELIABILITY_THRESHOLD_100
+        ]
         
         await self.websocket.send_json({
             "type": "message", 

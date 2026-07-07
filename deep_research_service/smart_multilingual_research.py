@@ -10,6 +10,13 @@ import time
 
 from utils.rate_limiter import rate_limiter, extract_domain
 
+# Merkezi sabitler: real_deep_research ile tutarlı tek normalize ölçek (0-1)
+# altındaki eşik.
+try:
+    from research_constants import RELIABILITY_THRESHOLD_10
+except ImportError:
+    from .research_constants import RELIABILITY_THRESHOLD_10
+
 logger = logging.getLogger(__name__)
 
 class SmartMultilingualResearcher:
@@ -349,7 +356,10 @@ Write only the queries, one per line, no explanations.
                 # Google yetersizse DuckDuckGo ekle
                 if len(results) < max_results:
                     try:
-                        from duckduckgo_search import DDGS
+                        try:
+                            from ddgs import DDGS
+                        except ImportError:
+                            from duckduckgo_search import DDGS
                         ddgs = DDGS()
                         ddg_results = list(ddgs.text(query, max_results=max_results, region='us-en'))
                         
@@ -460,11 +470,15 @@ Format: "Puan: X/10 - Gerekçe"
             # Puanı çıkar
             score_match = re.search(r'(\d+)/10', evaluation)
             score = int(score_match.group(1)) if score_match else 5
-            
+
+            # Eşik research_constants.RELIABILITY_THRESHOLD_NORMALIZED * 10'dan gelir.
+            # Varsayılan normalize 0.30 -> 3/10. (Eski kod 6/10 idi —
+            # real_deep_research'un 30/100 (= 0.30) ölçeğiyle tutarsız;
+            # tek normalize ölçek altında birleştirildi.)
             return {
                 'score': score,
                 'evaluation': evaluation,
-                'reliable': score >= 6
+                'reliable': score >= RELIABILITY_THRESHOLD_10
             }
             
         except Exception as e:
