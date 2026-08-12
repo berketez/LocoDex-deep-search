@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# LocoDex Deep Search — terminal başlatıcısı
+#
+# Depo nerede olursa olsun çalışır: sembolik bağlantıyı çözer, servis
+# dizinini bulur ve cli.py'yi çalıştırır.
+set -euo pipefail
+
+# Sembolik bağlantı zincirini çöz (macOS'ta readlink -f yok)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+SERVICE_DIR="$(cd -P "$BIN_DIR/../deep_research_service" && pwd)"
+
+PYTHON="${LOCODEX_PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+    if [ -x "$SERVICE_DIR/../venv/bin/python" ]; then
+        PYTHON="$SERVICE_DIR/../venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON="python3"
+    else
+        echo "python3 bulunamadı." >&2
+        exit 1
+    fi
+fi
+
+# Dizin değiştirilmez: cli.py servis dizinini kendi sys.path'ine ekler ve
+# kullanıcının bulunduğu dizinde kalmak göreli --out yollarının beklendiği
+# gibi çözülmesini sağlar.
+exec "$PYTHON" "$SERVICE_DIR/cli.py" "$@"

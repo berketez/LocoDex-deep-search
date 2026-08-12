@@ -22,7 +22,6 @@ metin üretiminde ve iddia eşleştirmede kullanılır.
 
 import asyncio
 import logging
-import math
 import os
 import re
 from datetime import datetime
@@ -39,8 +38,10 @@ try:
         SEARCH_MAX_PER_DOMAIN,
         SEARCH_FETCH_CONCURRENCY,
         SEARCH_FETCH_TIMEOUT_SEC,
+        SEARCH_FETCH_RETRIES,
         SEARCH_FETCH_MAX_BYTES,
         SEARCH_CONTENT_MAX_CHARS,
+        SEARCH_MIN_CONTENT_CHARS,
         LLM_MAX_CONSECUTIVE_FAILURES,
         RESEARCH_MAX_ROUNDS,
         RESEARCH_MIN_SOURCES_FOR_REPORT,
@@ -52,6 +53,7 @@ try:
         DOMAIN_PRIOR_UNTRUSTED,
         TRUSTED_DOMAINS,
         UNTRUSTED_DOMAIN_PATTERNS,
+        NON_ACADEMIC_SUBDOMAINS,
         CONFIDENCE_W_DOMAIN,
         CONFIDENCE_W_LLM,
         CONFIDENCE_SINGLE_SOURCE_CAP,
@@ -62,6 +64,8 @@ try:
         CONFIDENCE_LABEL_MEDIUM,
         CLAIMS_PER_SOURCE,
         CLAIMS_MAX_TOTAL,
+        FINDING_MIN_CHARS,
+        FINDING_MIN_WORDS,
     )
     from llm_client import LocalLLMClient, LLMError
     from date_extract import (
@@ -78,8 +82,10 @@ except ImportError:
         SEARCH_MAX_PER_DOMAIN,
         SEARCH_FETCH_CONCURRENCY,
         SEARCH_FETCH_TIMEOUT_SEC,
+        SEARCH_FETCH_RETRIES,
         SEARCH_FETCH_MAX_BYTES,
         SEARCH_CONTENT_MAX_CHARS,
+        SEARCH_MIN_CONTENT_CHARS,
         LLM_MAX_CONSECUTIVE_FAILURES,
         RESEARCH_MAX_ROUNDS,
         RESEARCH_MIN_SOURCES_FOR_REPORT,
@@ -91,6 +97,7 @@ except ImportError:
         DOMAIN_PRIOR_UNTRUSTED,
         TRUSTED_DOMAINS,
         UNTRUSTED_DOMAIN_PATTERNS,
+        NON_ACADEMIC_SUBDOMAINS,
         CONFIDENCE_W_DOMAIN,
         CONFIDENCE_W_LLM,
         CONFIDENCE_SINGLE_SOURCE_CAP,
@@ -101,6 +108,8 @@ except ImportError:
         CONFIDENCE_LABEL_MEDIUM,
         CLAIMS_PER_SOURCE,
         CLAIMS_MAX_TOTAL,
+        FINDING_MIN_CHARS,
+        FINDING_MIN_WORDS,
     )
     from .llm_client import LocalLLMClient, LLMError
     from .date_extract import (
@@ -116,6 +125,36 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+# Yalnızca User-Agent gönderen istekler, kamu kurumu ve akademik yayıncı
+# sitelerinde içeriksiz kabuk sayfa ya da hata döndürüyordu; bu da en güvenilir
+# kaynakların elenip yerlerine içerik çiftliklerinin kalmasına yol açıyordu.
+# Tam tarayıcı başlık kümesiyle bu sayfalar normal içerik döndürüyor.
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+# Kaynak elendiğinde kullanıcıya gösterilecek gerekçe etiketleri
+SKIP_REASONS = {
+    "erisim_reddedildi": "erişim reddedildi",
+    "bulunamadi": "sayfa bulunamadı",
+    "sunucu_hatasi": "sunucu hatası",
+    "zaman_asimi": "zaman aşımı",
+    "baglanti": "bağlantı kurulamadı",
+    "icerik_yetersiz": "okunabilir metin yok",
+    "html_disi": "HTML dışı içerik",
+    "gecersiz_hedef": "geçersiz adres",
+}
 
 TIME_SENSITIVITY_VALUES = ("critical", "moderate", "low")
 
@@ -144,10 +183,70 @@ def domain_prior(domain):
         for trusted in TRUSTED_DOMAINS[tier]:
             if domain == trusted or domain.endswith("." + trusted):
                 return prior
-    # .gov / .edu uzantıları listede olmasa da yüksek öncelikli
+    # .gov / .edu uzantıları listede olmasa da yüksek öncelikli; ancak
+    # kurumun sertifika/kurs/blog alt alanları akademik yayın değildir.
     if domain.endswith((".gov", ".edu", ".gov.tr", ".edu.tr", ".int")):
+        alt_alan = domain.split(".")[0]
+        if alt_alan in NON_ACADEMIC_SUBDOMAINS:
+            return DOMAIN_PRIOR_UNKNOWN
         return DOMAIN_PRIOR_HIGH
     return DOMAIN_PRIOR_UNKNOWN
+
+
+def _interleave_candidates(adaylar):
+    """
+    Aday kaynakları kalite ve alaka sıralarından dönüşümlü seçerek diz.
+
+    adaylar: (-domain_prior, motor_sirasi, norm_url, domain, ham_sonuc)
+
+    Saf kalite sırası tek başına yanlış sonuç veriyor: güvenilir ama konuyla
+    ilgisiz sayfalar (ölçülen örnek: bir gıda-yapay zeka sorgusunda
+    turkoloji.cu.edu.tr) okuma bütçesini tüketip turu bulgusuz bırakabiliyor.
+    Saf motor sırası ise güvenilir kaynakları hiç okumadan eliyor. İki sıradan
+    dönüşümlü seçim, bütçenin yarısını kaynak kalitesine, yarısını arama
+    alakasına ayırır.
+    """
+    kalite = sorted(adaylar, key=lambda a: (a[0], a[1]))
+    alaka = sorted(adaylar, key=lambda a: a[1])
+
+    sira, secilen = [], set()
+    i = j = 0
+    kalite_sirasi = True
+    while i < len(kalite) or j < len(alaka):
+        # Sırası gelen listede henüz seçilmemiş ilk adaya ilerle
+        if kalite_sirasi:
+            while i < len(kalite) and kalite[i][2] in secilen:
+                i += 1
+            aday, ilerledi = (kalite[i], True) if i < len(kalite) else (None, False)
+            if ilerledi:
+                i += 1
+        else:
+            while j < len(alaka) and alaka[j][2] in secilen:
+                j += 1
+            aday, ilerledi = (alaka[j], True) if j < len(alaka) else (None, False)
+            if ilerledi:
+                j += 1
+
+        kalite_sirasi = not kalite_sirasi
+        if not ilerledi:
+            continue
+        secilen.add(aday[2])
+        sira.append(aday)
+    return sira
+
+
+def _is_valid_finding(statement):
+    """
+    Bulgu ifadesinin tam bir cümle olup olmadığını denetler.
+
+    Model bozuk JSON ürettiğinde ya da kesik çıktı kurtarıldığında anlamsız
+    parçalar ("ownset") bulgu olarak rapora düşebiliyordu.
+    """
+    if not statement:
+        return False
+    if len(statement) < FINDING_MIN_CHARS:
+        return False
+    return len(statement.split()) >= FINDING_MIN_WORDS
 
 
 def source_reliability(prior, llm_score_0_10):
@@ -250,6 +349,8 @@ class VerifiedDeepResearcher:
         self.llm = LocalLLMClient(model_name, model_source)
         self.now = datetime.now()
         self.sources = []          # Kabul edilen kaynaklar (dict)
+        self.findings = []         # Çapraz doğrulanmış bulgular (rapor sonrası okunabilir)
+        self.skipped = {}          # Kullanılamayan kaynaklar: {gerekçe: adet}
         self.seen_urls = set()
         self.all_queries = []
         self.language = "tr"
@@ -486,7 +587,7 @@ Kurallar:
         want_news = sensitivity == "critical"
         raw = []
         for i, query in enumerate(queries):
-            await self._message(f"🔍 Arama {i + 1}/{len(queries)}: {query}")
+            await self._message(f"Arama {i + 1}/{len(queries)}: {query}")
             try:
                 results = await asyncio.to_thread(self._search_sync, query, sensitivity, want_news)
             except Exception as e:
@@ -501,17 +602,29 @@ Kurallar:
         for s in self.sources:
             per_domain[s["domain"]] = per_domain.get(s["domain"], 0) + 1
 
-        picked = []
-        for r in raw:
+        # Adaylar önce kalite önceline göre sıralanır. Arama motorunun kendi
+        # sıralaması alaka düzeyini yansıtır, kaynak güvenilirliğini değil;
+        # ham sırayla alındığında tur bütçesi listenin başındaki SEO
+        # içeriklerine gidiyor ve aynı sonuç kümesinde daha aşağıda duran
+        # kamu/akademik kaynaklar hiç okunmuyordu. Aynı öncel içinde motor
+        # sırası korunur, böylece alaka düzeyi ikincil ölçüt olarak kalır.
+        adaylar = []
+        aday_urls = set()
+        for sira, r in enumerate(raw):
             url = (r.get("url") or "").strip()
             if not url or not url.startswith("http"):
                 continue
             norm = url.split("#")[0].rstrip("/")
-            if norm in self.seen_urls:
+            if norm in self.seen_urls or norm in aday_urls:
                 continue
             d = domain_of(url)
             if not d:
                 continue
+            aday_urls.add(norm)
+            adaylar.append((-domain_prior(d), sira, norm, d, r))
+
+        picked = []
+        for _, _, norm, d, r in _interleave_candidates(adaylar):
             if per_domain.get(d, 0) >= SEARCH_MAX_PER_DOMAIN:
                 continue
             self.seen_urls.add(norm)
@@ -568,34 +681,52 @@ Kurallar:
         return title, text, published_at, date_method, date_conf
 
     async def _fetch_one(self, session, semaphore, result):
+        """
+        Bir kaynağı okur. (kaynak, gerekçe) döndürür; kaynak None ise gerekçe
+        SKIP_REASONS anahtarıdır. Geçici hatalarda sınırlı sayıda yeniden dener.
+        """
         url = result["url"]
         if not url.lower().startswith(("http://", "https://")) or self._is_private_target(url):
-            return None
+            return None, "gecersiz_hedef"
+
+        html = None
+        reason = "baglanti"
         async with semaphore:
-            try:
-                timeout = aiohttp.ClientTimeout(total=SEARCH_FETCH_TIMEOUT_SEC)
-                async with session.get(
-                    url, timeout=timeout, headers={"User-Agent": USER_AGENT}
-                ) as response:
-                    if response.status != 200:
-                        return None
-                    ctype = response.headers.get("Content-Type", "")
-                    if "html" not in ctype and "text" not in ctype:
-                        return None
-                    raw = await response.content.read(SEARCH_FETCH_MAX_BYTES)
-                    encoding = response.charset or "utf-8"
-                    html = raw.decode(encoding, errors="ignore")
-            except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeDecodeError,
-                    LookupError, OSError) as e:
-                logger.debug(f"İndirme hatası {url}: {e}")
-                return None
+            for attempt in range(SEARCH_FETCH_RETRIES + 1):
+                try:
+                    timeout = aiohttp.ClientTimeout(total=SEARCH_FETCH_TIMEOUT_SEC)
+                    async with session.get(
+                        url, timeout=timeout, headers=BROWSER_HEADERS,
+                        allow_redirects=True,
+                    ) as response:
+                        if response.status != 200:
+                            if response.status in (401, 403, 429):
+                                return None, "erisim_reddedildi"
+                            if response.status == 404:
+                                return None, "bulunamadi"
+                            return None, "sunucu_hatasi"
+                        ctype = response.headers.get("Content-Type", "")
+                        if "html" not in ctype and "text" not in ctype:
+                            return None, "html_disi"
+                        raw = await response.content.read(SEARCH_FETCH_MAX_BYTES)
+                        html = raw.decode(response.charset or "utf-8", errors="ignore")
+                    break
+                except asyncio.TimeoutError:
+                    reason = "zaman_asimi"
+                    logger.debug(f"Zaman aşımı {url} (deneme {attempt + 1})")
+                except (aiohttp.ClientError, UnicodeDecodeError, LookupError, OSError) as e:
+                    reason = "baglanti"
+                    logger.debug(f"Okuma hatası {url} (deneme {attempt + 1}): {e}")
+
+        if html is None:
+            return None, reason
 
         title, text, published_at, date_method, date_conf = await asyncio.to_thread(
             self._parse_html, html, result.get("title"), url, self.now
         )
 
-        if len(text) < 300:
-            return None
+        if len(text) < SEARCH_MIN_CONTENT_CHARS:
+            return None, "icerik_yetersiz"
 
         # Haber motorundan tarih geldiyse ve sayfadan çıkarılamadıysa onu kullan
         if published_at is None and result.get("engine_date"):
@@ -614,9 +745,16 @@ Kurallar:
             "date_method": date_method,
             "date_confidence": date_conf,
             "domain_prior": domain_prior(result["domain"]),
-        }
+        }, "ok"
 
     async def fetch_contents(self, results, sensitivity):
+        """
+        Kaynakları paralel okur.
+
+        (kaynaklar, elenenler) döndürür; elenenler {gerekçe: adet} sözlüğüdür.
+        Eleme gerekçeleri rapora değil ilerleme bildirimine yansır: hangi
+        kaynağın neden kullanılamadığı görünür olmalıdır.
+        """
         semaphore = asyncio.Semaphore(SEARCH_FETCH_CONCURRENCY)
         async with aiohttp.ClientSession() as session:
             fetched = await asyncio.gather(
@@ -624,12 +762,20 @@ Kurallar:
                 return_exceptions=True,
             )
         sources = []
+        skipped = {}
         for item in fetched:
-            if isinstance(item, Exception) or item is None:
+            if isinstance(item, Exception):
+                skipped["baglanti"] = skipped.get("baglanti", 0) + 1
                 continue
-            item["freshness"] = freshness_score(item["published_at"], sensitivity, now=self.now)
-            sources.append(item)
-        return sources
+            source, reason = item
+            if source is None:
+                skipped[reason] = skipped.get(reason, 0) + 1
+                continue
+            source["freshness"] = freshness_score(
+                source["published_at"], sensitivity, now=self.now
+            )
+            sources.append(source)
+        return sources, skipped
 
     # ------------------------------------------------------------------
     # 5. Kaynak analizi: ilgililik + güvenilirlik + iddia çıkarımı (tek çağrı)
@@ -718,7 +864,6 @@ Kurallar:
         # eklenen kaynakların iddialarını tamamen dışarıda bırakıyordu.
         claim_lines = []
         included_ids = set()
-        n = len(self.sources)
         for claim_rank in range(CLAIMS_PER_SOURCE):
             if len(claim_lines) >= CLAIMS_MAX_TOTAL:
                 break
@@ -773,10 +918,13 @@ Kurallar:
   ifadesini esas al)
 - Kaynak numarası uydurma; yalnızca yukarıdaki K numaralarını kullan"""
 
+        # Konsolidasyon çıktısı en uzun JSON'dur (12 bulgu × Türkçe ifade);
+        # 2000 token'da düzenli kesiliyor ve tüm tur boşa gidiyordu.
         result = await self.llm.call_json(
             prompt,
             system_prompt="Sen doğrulama analistisin. Yalnızca geçerli JSON üretirsin.",
-            max_tokens=2000,
+            max_tokens=4000,
+            retries=2,
         )
 
         findings = []
@@ -801,7 +949,9 @@ Kurallar:
             if not isinstance(item, dict):
                 continue
             statement = str(item.get("ifade", "")).strip()
-            if not statement:
+            if not _is_valid_finding(statement):
+                if statement:
+                    logger.warning(f"Geçersiz bulgu ifadesi atlandı: {statement!r}")
                 continue
             supp_ids = _ids(item.get("destekleyen_kaynaklar"))
             contra_ids = _ids(item.get("celisen_kaynaklar"))
@@ -921,14 +1071,14 @@ Daha önce kullanılan sorgular: {', '.join(self.all_queries[-8:])}"""
         dated = [s["published_at"] for s in self.sources if s["published_at"]]
         if not dated:
             return (
-                "⚠️ Hiçbir kaynağın yayın tarihi doğrulanamadı. Bilgiler güncel "
+                "UYARI: Hiçbir kaynağın yayın tarihi doğrulanamadı. Bilgiler güncel "
                 "olmayabilir; kritik kararlar için birincil kaynaklara başvurun."
             )
         newest = max(dated)
         age_days = (self.now - newest).days
         if age_days > threshold_days:
             return (
-                f"⚠️ En yeni doğrulanmış kaynak {newest.strftime('%d.%m.%Y')} tarihli "
+                f"UYARI: En yeni doğrulanmış kaynak {newest.strftime('%d.%m.%Y')} tarihli "
                 f"({age_days} gün önce). Bu konu hızlı değiştiği için daha güncel "
                 f"gelişmeler bu raporda olmayabilir."
             )
@@ -1045,7 +1195,7 @@ information beyond the findings above."""
                 newest = (
                     f["newest_date"].strftime("%d.%m.%Y") if f["newest_date"] else "tarih doğrulanamadı"
                 )
-                flag = " ⚠️ çelişkili" if f["contradicting"] else ""
+                flag = " · **çelişkili**" if f["contradicting"] else ""
                 key_findings_lines.append(
                     f"- {f['statement']} — **%{f['confidence']} "
                     f"({confidence_label(f['confidence'], lang)})** · "
@@ -1090,7 +1240,20 @@ information beyond the findings above."""
             f"≥%{CONFIDENCE_LABEL_MEDIUM} orta, altı düşük\n"
         )
 
-        return header + key_findings + body.strip() + "\n\n" + source_table + methodology
+        return header + key_findings + self._strip_leading_title(body) + "\n\n" + source_table + methodology
+
+    @staticmethod
+    def _strip_leading_title(body):
+        """
+        Model, yalnızca gövde istendiği hâlde başına kendi H1 başlığını ve
+        tarih/konu satırlarını ekleyebiliyor; rapor iki başlıkla açılıyordu.
+        İlk bölüm başlığına (##) kadar olan bu tekrarı ayıklar.
+        """
+        body = body.strip()
+        if not body.startswith("# "):
+            return body
+        section = re.search(r"^## ", body, flags=re.MULTILINE)
+        return body[section.start():].strip() if section else body
 
     # ------------------------------------------------------------------
     # Kayıt
@@ -1137,14 +1300,14 @@ information beyond the findings above."""
         self.now = start
         self.language = self.detect_language(topic)
 
-        await self._progress(0.02, f"🚀 '{topic}' için doğrulamalı derin araştırma başlıyor...")
+        await self._progress(0.02, f"'{topic}' için doğrulamalı derin araştırma başlıyor...")
 
         # 1. Soru analizi
-        await self._progress(0.05, "🧠 Soru analiz ediliyor (konu türü, zaman duyarlılığı, alt sorular)...")
+        await self._progress(0.05, "Soru analiz ediliyor (konu türü, zaman duyarlılığı, alt sorular)...")
         analysis = await self.analyze_topic(topic)
         sens_tr = {"critical": "kritik (güncellik şart)", "moderate": "orta", "low": "düşük"}
         await self._message(
-            f"📌 Konu türü: {analysis['konu_turu']} | Zaman duyarlılığı: "
+            f"Konu türü: {analysis['konu_turu']} | Zaman duyarlılığı: "
             f"{sens_tr.get(analysis['zaman_duyarliligi'], '?')} | "
             f"{len(analysis['alt_sorular'])} alt soru belirlendi"
         )
@@ -1158,7 +1321,7 @@ information beyond the findings above."""
             base = 0.08 + (round_no - 1) * 0.28
 
             # 2. Sorgular
-            await self._progress(base, f"🧭 Tur {round_no}: arama stratejisi hazırlanıyor...")
+            await self._progress(base, f"Tur {round_no}: arama stratejisi hazırlanıyor...")
             queries = await self.generate_queries(
                 topic, analysis, round_no=round_no, gap_queries=gap_queries
             )
@@ -1166,20 +1329,34 @@ information beyond the findings above."""
                 break
 
             # 3. Arama
-            await self._progress(base + 0.04, f"🌐 Tur {round_no}: web araması ({len(queries)} sorgu)...")
+            await self._progress(base + 0.04, f"Tur {round_no}: web araması ({len(queries)} sorgu)...")
             results = await self.search_round(queries, analysis["zaman_duyarliligi"])
-            await self._message(f"🔎 {len(results)} yeni aday kaynak bulundu")
+            await self._message(f"{len(results)} yeni aday kaynak bulundu")
 
             # 4. İçerik + tarih
-            await self._progress(base + 0.10, "📥 Sayfalar indiriliyor, yayın tarihleri çıkarılıyor...")
-            fetched = await self.fetch_contents(results, analysis["zaman_duyarliligi"])
+            await self._progress(base + 0.10, "Kaynak sayfaları okunuyor, yayın tarihleri çıkarılıyor...")
+            fetched, skipped = await self.fetch_contents(
+                results, analysis["zaman_duyarliligi"]
+            )
             dated = sum(1 for s in fetched if s["published_at"])
             await self._message(
-                f"📅 {len(fetched)} sayfa okundu, {dated} tanesinin yayın tarihi doğrulandı"
+                f"{len(fetched)} sayfa okundu, {dated} tanesinin yayın tarihi doğrulandı"
             )
+            for gerekce, adet in skipped.items():
+                self.skipped[gerekce] = self.skipped.get(gerekce, 0) + adet
+            if skipped:
+                detay = ", ".join(
+                    f"{adet} {SKIP_REASONS.get(gerekce, gerekce)}"
+                    for gerekce, adet in sorted(
+                        skipped.items(), key=lambda kv: -kv[1]
+                    )
+                )
+                await self._message(
+                    f"{sum(skipped.values())} kaynak kullanılamadı: {detay}"
+                )
 
             # 5. Kaynak analizi + iddia çıkarımı
-            await self._progress(base + 0.16, "🔬 Kaynaklar analiz ediliyor, iddialar çıkarılıyor...")
+            await self._progress(base + 0.16, "Kaynaklar analiz ediliyor, iddialar çıkarılıyor...")
             consecutive_llm_failures = 0
             for i, source in enumerate(fetched):
                 date_info = (
@@ -1198,7 +1375,7 @@ information beyond the findings above."""
                     # üretmek yerine belirli sayıda denemeden sonra durdur.
                     consecutive_llm_failures += 1
                     logger.error(f"Kaynak analizi LLM hatası: {e}")
-                    await self._message("      ⚠️ Model hatası, kaynak atlandı")
+                    await self._message("      Model hatası, kaynak atlandı")
                     if consecutive_llm_failures >= LLM_MAX_CONSECUTIVE_FAILURES:
                         raise LLMError(
                             "Model sunucusuna art arda erişilemedi, araştırma durduruldu"
@@ -1207,16 +1384,16 @@ information beyond the findings above."""
                 if analyzed and analyzed.get("claims"):
                     self.sources.append(analyzed)
                     await self._message(
-                        f"      ✅ {len(analyzed['claims'])} iddia, güvenilirlik "
+                        f"      {len(analyzed['claims'])} iddia, güvenilirlik "
                         f"%{int(round(analyzed['reliability'] * 100))}"
                     )
                 else:
-                    await self._message("      ❌ İlgisiz ya da kullanılamaz içerik")
+                    await self._message("      İlgisiz ya da kullanılamaz içerik")
 
             # 6. Çapraz doğrulama — konsolidasyon başarısız olursa önceki
             # turun bulguları korunur (koşulsuz ezme, geçici LLM arızasında
             # tüm sonucu yok ediyordu)
-            await self._progress(base + 0.24, "⚖️ İddialar kaynaklar arası çapraz doğrulanıyor...")
+            await self._progress(base + 0.24, "İddialar kaynaklar arası çapraz doğrulanıyor...")
             try:
                 new_findings = await self.consolidate_findings(topic, analysis)
             except LLMError as e:
@@ -1226,11 +1403,11 @@ information beyond the findings above."""
                 findings = new_findings
             elif findings:
                 await self._message(
-                    "⚠️ Bu turun konsolidasyonu başarısız; önceki bulgular korundu"
+                    "Bu turun konsolidasyonu başarısız; önceki bulgular korundu"
                 )
             contradictions = sum(1 for f in findings if f["contradicting"])
             await self._message(
-                f"📊 {len(findings)} doğrulanmış bulgu, {contradictions} çelişki tespit edildi"
+                f"{len(findings)} doğrulanmış bulgu, {contradictions} çelişki tespit edildi"
             )
 
             # 7. Boşluk analizi → devam mı?
@@ -1239,30 +1416,33 @@ information beyond the findings above."""
             gap_queries = await self.find_gaps(topic, analysis, findings)
             if gap_queries is None:
                 await self._message(
-                    "⚠️ Boşluk analizi yapılamadı, mevcut kaynaklarla rapora geçiliyor"
+                    "Boşluk analizi yapılamadı, mevcut kaynaklarla rapora geçiliyor"
                 )
                 break
             if not gap_queries:
-                await self._message("✅ Kapsam yeterli, ek tur gerekmedi")
+                await self._message("Kapsam yeterli, ek tur gerekmedi")
                 break
             await self._message(
-                f"🔄 Eksik alanlar tespit edildi, tur {round_no + 1} başlıyor: "
+                f"Eksik alanlar tespit edildi, tur {round_no + 1} başlıyor: "
                 + "; ".join(gap_queries)
             )
 
+        # Bulgular oturum hafızası ve özet çıktısı için nesnede saklanır
+        self.findings = findings
+
         # 8. Rapor
-        await self._progress(0.9, "📝 Doğrulanmış rapor yazılıyor...")
+        await self._progress(0.9, "Doğrulanmış rapor yazılıyor...")
         duration = (datetime.now() - start).total_seconds()
         report = await self.generate_report(topic, analysis, findings, duration)
 
         saved = self.save_report(topic, report)
         if saved:
-            await self._message(f"💾 Rapor kaydedildi: {saved[0]}")
+            await self._message(f"Rapor kaydedildi: {saved[0]}")
 
         overall = self._overall_confidence(findings)
         await self._progress(
             1.0,
-            f"🎉 Araştırma tamamlandı — {len(self.sources)} kaynak, "
+            f"Araştırma tamamlandı — {len(self.sources)} kaynak, "
             f"{len(findings)} bulgu, genel güven %{overall} ({duration:.0f} sn)",
         )
         return report

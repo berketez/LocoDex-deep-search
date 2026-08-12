@@ -90,6 +90,20 @@ class TestDomainHelpers:
     def test_prior_untrusted_pattern(self):
         assert domain_prior("best-affiliate-deals.com") == DOMAIN_PRIOR_UNTRUSTED
 
+    def test_akademik_alt_alan_kurumsal_oncel_alir(self):
+        assert domain_prior("kent.edu.tr") == DOMAIN_PRIOR_HIGH
+        assert domain_prior("cs.stanford.edu") == DOMAIN_PRIOR_HIGH
+
+    def test_pazarlama_alt_alani_kurumsal_oncel_almaz(self):
+        # Üniversitenin sertifika/kurs satış sayfası akademik yayın değildir
+        assert domain_prior("sertifika.kent.edu.tr") == DOMAIN_PRIOR_UNKNOWN
+        assert domain_prior("egitim.ornek.edu.tr") == DOMAIN_PRIOR_UNKNOWN
+        assert domain_prior("shop.ornek.edu") == DOMAIN_PRIOR_UNKNOWN
+
+    def test_kurumsal_listede_olan_alan_etkilenmez(self):
+        # Açıkça güvenilir listesindeki alanlar alt alan kuralından etkilenmez
+        assert domain_prior("news.mit.edu") == DOMAIN_PRIOR_HIGH
+
     def test_source_reliability_blend(self):
         # 0.6 * 0.9 + 0.4 * 0.8 = 0.86
         assert source_reliability(0.9, 8) == pytest.approx(0.86)
@@ -104,6 +118,95 @@ class TestDomainHelpers:
 
     def test_source_reliability_none_defaults_to_5(self):
         assert source_reliability(0.5, None) == pytest.approx(0.6 * 0.5 + 0.4 * 0.5)
+
+
+class TestBulguGecerliligi:
+    """Bozuk model çıktısından gelen anlamsız parçalar bulgu sayılmamalı."""
+
+    @staticmethod
+    def _v(metin):
+        from verified_research import _is_valid_finding
+
+        return _is_valid_finding(metin)
+
+    def test_tam_cumle_kabul_edilir(self):
+        assert self._v(
+            "Yapay zeka destekli görüntüleme sistemleri kusurları tespit eder."
+        )
+
+    def test_bozuk_json_parcasi_elenir(self):
+        assert not self._v("ownset")
+        assert not self._v("ifade ownset")
+
+    def test_bos_ifade_elenir(self):
+        assert not self._v("")
+        assert not self._v("   ")
+
+    def test_cok_kisa_kelime_dizisi_elenir(self):
+        assert not self._v("ab cd ef gh")
+
+
+class TestKaynakSecimSirasi:
+    """Tur bütçesi önce güvenilir alan adlarına harcanmalıdır."""
+
+    @staticmethod
+    def _kos(ham, limit=None):
+        import asyncio
+
+        import verified_research as vr
+
+        class Sessiz:
+            async def send_json(self, _d):
+                pass
+
+        eski = vr.SEARCH_MAX_SOURCES_PER_ROUND
+        if limit is not None:
+            vr.SEARCH_MAX_SOURCES_PER_ROUND = limit
+        try:
+            arastirmaci = vr.VerifiedDeepResearcher("m", "Ollama", Sessiz())
+            arastirmaci._search_sync = lambda *a, **k: ham
+            secilen = asyncio.run(arastirmaci.search_round(["sorgu"], "moderate"))
+        finally:
+            vr.SEARCH_MAX_SOURCES_PER_ROUND = eski
+        return [s["domain"] for s in secilen]
+
+    def test_guvenilir_alan_adi_one_gecer(self):
+        ham = [
+            {"url": "https://seo-ciftligi.example/1"},
+            {"url": "https://baska-spam.example/2"},
+            {"url": "https://arxiv.org/abs/2501.00001"},
+        ]
+        assert self._kos(ham)[0] == "arxiv.org"
+
+    def test_butce_dolunca_dusuk_kaliteli_kaynak_disarida_kalir(self):
+        ham = [
+            {"url": "https://seo-ciftligi.example/1"},
+            {"url": "https://reddit.com/r/x"},
+            {"url": "https://www.reuters.com/haber"},
+        ]
+        secilen = self._kos(ham, limit=1)
+        assert secilen == ["reuters.com"]
+
+    def test_ayni_oncelde_arama_sirasi_korunur(self):
+        ham = [
+            {"url": "https://bilinmeyen-bir.example/1"},
+            {"url": "https://bilinmeyen-iki.example/2"},
+        ]
+        assert self._kos(ham) == ["bilinmeyen-bir.example", "bilinmeyen-iki.example"]
+
+    def test_tekrarlanan_url_bir_kez_alinir(self):
+        ham = [
+            {"url": "https://arxiv.org/abs/1#bolum"},
+            {"url": "https://arxiv.org/abs/1/"},
+        ]
+        assert len(self._kos(ham)) == 1
+
+    def test_domain_basina_limit_korunur(self):
+        ham = [{"url": f"https://arxiv.org/abs/{i}"} for i in range(5)]
+        # SEARCH_MAX_PER_DOMAIN kadar alınır, fazlası elenir
+        from research_constants import SEARCH_MAX_PER_DOMAIN
+
+        assert len(self._kos(ham)) == SEARCH_MAX_PER_DOMAIN
 
 
 class TestAsBool:

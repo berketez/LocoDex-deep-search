@@ -55,10 +55,14 @@ SEARCH_MAX_QUERIES_PER_ROUND = 6      # Tur başına en fazla sorgu
 SEARCH_RESULTS_PER_QUERY = 6          # Sorgu başına ham sonuç
 SEARCH_MAX_SOURCES_PER_ROUND = 14     # Tur başına incelenecek en fazla kaynak
 SEARCH_MAX_PER_DOMAIN = 2             # Aynı domain'den en fazla kaynak (çeşitlilik)
-SEARCH_FETCH_CONCURRENCY = 5          # Paralel sayfa indirme limiti
-SEARCH_FETCH_TIMEOUT_SEC = 15         # Sayfa indirme zaman aşımı
-SEARCH_FETCH_MAX_BYTES = 3_000_000    # Sayfa başına indirilecek en fazla bayt
+SEARCH_FETCH_CONCURRENCY = 5          # Paralel sayfa okuma limiti
+SEARCH_FETCH_TIMEOUT_SEC = 25         # Sayfa okuma zaman aşımı
+# Not: 15 sn kurumsal sitelerin (kamu kurumları, akademik yayıncılar) ilk yanıt
+# süresini karşılamıyordu ve en güvenilir kaynaklar sessizce eleniyordu.
+SEARCH_FETCH_RETRIES = 1              # Geçici hatada (zaman aşımı/bağlantı) yeniden deneme
+SEARCH_FETCH_MAX_BYTES = 3_000_000    # Sayfa başına okunacak en fazla bayt
 SEARCH_CONTENT_MAX_CHARS = 6000       # Kaynak başına analiz edilecek metin uzunluğu
+SEARCH_MIN_CONTENT_CHARS = 300        # Bu uzunluğun altındaki metin kullanılabilir sayılmaz
 
 # === LLM DAYANIKLILIK ===
 LLM_MAX_CONSECUTIVE_FAILURES = 3      # Üst üste bu kadar LLM hatasında araştırma durur
@@ -123,6 +127,17 @@ UNTRUSTED_DOMAIN_PATTERNS = [
     "clickbait", "affiliate", "coupon", "promo-", "-promo",
 ]
 
+# Kurumsal uzantı (.edu / .gov) akademik ya da resmî yayın anlamına gelmez:
+# üniversitelerin sertifika/kurs satış ve blog alt alanları da aynı uzantıyı
+# taşır. Bu alt alanlar kurumsal öncelden yararlanmaz, bilinmeyen sayılır.
+# (Ölçülen örnek: sertifika.kent.edu.tr — ücretli sertifika programı pazarlama
+# sayfası, kurumsal öncelle raporun en güvenilir kaynağı görünüyordu.)
+NON_ACADEMIC_SUBDOMAINS = (
+    "sertifika", "egitim", "kurs", "blog", "haber", "duyuru", "shop",
+    "magaza", "store", "kariyer", "etkinlik", "certificate", "training",
+    "news", "events", "alumni",
+)
+
 # === GÜVEN SKORU (claim confidence) AĞIRLIKLARI ===
 # source_reliability = W_DOMAIN * domain_prior + W_LLM * llm_skoru(0-1)
 CONFIDENCE_W_DOMAIN = 0.6
@@ -142,3 +157,10 @@ CONFIDENCE_LABEL_MEDIUM = 60   # "orta güven"; altı "düşük güven"
 # === İDDİA ÇIKARIMI ===
 CLAIMS_PER_SOURCE = 4          # Kaynak başına en fazla iddia
 CLAIMS_MAX_TOTAL = 48          # Konsolidasyona girecek en fazla toplam iddia
+
+# === BULGU GEÇERLİLİK EŞİKLERİ ===
+# Bulgu ifadesi tam bir cümle olmalıdır. Model bozuk ya da yarım JSON
+# ürettiğinde ("ifade": "ownset" gibi) anlamsız parçalar rapora düşüyordu;
+# bu eşiklerin altındaki ifadeler bulgu sayılmaz.
+FINDING_MIN_CHARS = 25
+FINDING_MIN_WORDS = 4

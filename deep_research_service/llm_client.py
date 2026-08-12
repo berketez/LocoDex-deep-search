@@ -139,7 +139,84 @@ def extract_json(text):
             result = _try(cleaned)
             if result is not None:
                 return result
+
+    # Çıktı token limitinde kesildiyse dengeli blok hiç bulunamaz. Bu durumda
+    # tamamlanmış eleman sayısı kadarını kurtarmak, tüm turu boşa harcamaktan
+    # iyidir: son tam elemandan sonrası atılır, açık yapılar kapatılır.
+    repaired = _repair_truncated(text)
+    if repaired is not None:
+        result = _try(repaired)
+        if result is not None:
+            logger.warning("JSON çıktısı kesik geldi; tamamlanan kısım kurtarıldı")
+            return result
     return None
+
+
+def _repair_truncated(text):
+    """
+    Yarıda kesilmiş JSON metninden son tam elemana kadar olan kısmı onarır.
+
+    Dizi içindeki eksik son eleman atılır, açık kalan parantezler kapatılır.
+    Kurtarılacak tam eleman yoksa None döner.
+    """
+    start = min(
+        (i for i in (text.find("{"), text.find("[")) if i != -1),
+        default=-1,
+    )
+    if start == -1:
+        return None
+    text = text[start:]
+
+    stack = []
+    in_string = False
+    escape = False
+    last_safe = None  # Bir dizi elemanının kapandığı son konum
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if not stack:
+                break
+            stack.pop()
+            if stack and stack[-1] == "[":
+                last_safe = i
+
+    if last_safe is None:
+        return None
+
+    head = text[: last_safe + 1]
+    # Kalan açık yapıları sırayla kapat
+    open_stack = []
+    in_string = False
+    escape = False
+    for ch in head:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            open_stack.append(ch)
+        elif ch in "}]" and open_stack:
+            open_stack.pop()
+
+    closers = {"{": "}", "[": "]"}
+    return head + "".join(closers[ch] for ch in reversed(open_stack))
 
 
 class LLMError(Exception):
@@ -238,7 +315,6 @@ class LocalLLMClient:
 
         hosts = await asyncio.to_thread(_resolve_host_candidates)
         errors = []
-        truncated_error = None
         async with aiohttp.ClientSession() as session:
             # Daha önce çalışan uç nokta varsa önce onu dene
             if self._resolved_base is not None:
