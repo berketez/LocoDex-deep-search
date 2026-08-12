@@ -35,6 +35,20 @@ RETRY_WAIT_MAX_SEC = 15
 # Not: multiplier=1 ile gerçek bekleme = 4 + 4 = 8 s (min floor üstel artışı boğar).
 # Daha agresif backoff için multiplier=4 kullanılmalı.
 
+# === LLM ÇIKTI TOKEN LİMİTLERİ ===
+# Reasoning ("düşünen") modeller — Qwen3, DeepSeek-R1, gpt-oss vb. — çıktı
+# limitini önce düşünme zincirine harcar. Limit düşükse model JSON'a hiç
+# başlayamadan kesilir: üretilen tokenların tamamı düşünmeye gider ve
+# çağrıdan tek karakter JSON çıkmaz.
+# Birincil çözüm düşünmeyi kapatmaktır (llm_client._call_* içinde); bu
+# limitler, kapatmayı desteklemeyen modeller için ikinci savunma hattıdır.
+LLM_MAX_OUTPUT_TOKENS = 16000     # Yeniden denemelerde çıkılabilecek tavan
+LLM_JSON_TOKENS_SMALL = 1500      # Kısa JSON (niyet, konu formülasyonu)
+LLM_JSON_TOKENS_DEFAULT = 3000    # Normal JSON (analiz, sorgu, boşluk)
+LLM_JSON_TOKENS_LARGE = 6000      # Uzun JSON (iddia çıkarımı, konsolidasyon)
+LLM_TEXT_TOKENS_ANSWER = 4000     # Serbest metin cevap (takip sorusu)
+LLM_TEXT_TOKENS_REPORT = 8000     # Rapor gövdesi
+
 # === LLM PARAMETRELERİ ===
 LLM_TIMEOUT_SEC = 600        # LiteLLM (10 dakika)
 LLM_HEALTH_TIMEOUT_SEC = 2   # /health probe
@@ -63,6 +77,30 @@ SEARCH_FETCH_RETRIES = 1              # Geçici hatada (zaman aşımı/bağlant�
 SEARCH_FETCH_MAX_BYTES = 3_000_000    # Sayfa başına okunacak en fazla bayt
 SEARCH_CONTENT_MAX_CHARS = 6000       # Kaynak başına analiz edilecek metin uzunluğu
 SEARCH_MIN_CONTENT_CHARS = 300        # Bu uzunluğun altındaki metin kullanılabilir sayılmaz
+
+# Arama yedek motorları. ddgs varsayılanı ("auto") çoğu sorguyu karşılar ama
+# arka arkaya sorguda geçici olarak boş dönebilir: boş dönen bir sorgu kısa
+# süre sonra hem varsayılan hem yedek motorlarda sonuç verebiliyor. Boşluk
+# kalıcı değil geçici olduğu için sorgu kaybedilmez, sırayla yeniden denenir.
+# Google yedeği kaldırıldı: sonuçlar yalnızca JavaScript ile yükleniyor,
+# JS çalıştırmayan bir istemci yanıt HTML'inde tek sonuç linki bulamıyor.
+SEARCH_BACKEND_FALLBACKS = ("bing", "yandex", "brave", "mojeek")
+
+# === MEVZUAT SORULARI ===
+# Bir kuralın ne olduğu sorulduğunda serbest arama kanunun kendisini değil,
+# kanun hakkında yazılmış ikincil metni getiriyor. Sonuç doğru olsa bile
+# kanıt zinciri blog ve haber kaynaklarına dayanıyor, birincil mevzuat metni
+# hiç bulunmuyor. `site:` operatörü aynı içeriği doğrudan resmî yayından
+# getirir ve kanıtı birincil kaynağa bağlar.
+LEGAL_TOPIC_TYPES = {"hukuk", "saglik", "finans"}
+LEGAL_QUERY_RULE = """- Bu bir mevzuat sorusu: sorgulardan en az 2 tanesi KANUN METNİNİ
+  hedeflesin, kanun hakkında yazılmış yorumu değil. `site:` operatörü kullan:
+  AB mevzuatı için `site:eur-lex.europa.eu`, Almanya için
+  `site:gesetze-im-internet.de`, Türkiye için `site:mevzuat.gov.tr` veya
+  `site:resmigazete.gov.tr`; konu başka bir ülkenin ya da kurumun mevzuatıysa
+  onun resmî yayın sitesini hedefle. Mevzuatın numarasını/adını biliyorsan
+  sorguya ekle — düzenleme numarası, yönetmelik adı ya da madde numarası
+  aramayı doğrudan kaynağa götürür"""
 
 # === LLM DAYANIKLILIK ===
 LLM_MAX_CONSECUTIVE_FAILURES = 3      # Üst üste bu kadar LLM hatasında araştırma durur
@@ -106,6 +144,10 @@ TRUSTED_DOMAINS = {
         "huggingface.co", "kaggle.com", "paperswithcode.com",
         "who.int", "cdc.gov", "nasa.gov", "fda.gov", "sec.gov", "europa.eu",
         "tuik.gov.tr", "tcmb.gov.tr", "resmigazete.gov.tr",
+        # Almanya'nın resmî mevzuat portalı. AB (europa.eu → eur-lex) ve Türkiye
+        # (.gov.tr → mevzuat/resmigazete) yukarıdaki kurallarla zaten kapsanıyor,
+        # ama .de uzantısı kendiliğinden yükselmediği için bu açıkça yazılır.
+        "gesetze-im-internet.de",
     ],
     "medium": [
         "wikipedia.org", "techcrunch.com", "arstechnica.com", "wired.com",

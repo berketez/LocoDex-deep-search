@@ -19,8 +19,10 @@ from datetime import datetime
 
 try:
     from llm_client import LocalLLMClient, LLMError
+    from research_constants import LLM_JSON_TOKENS_SMALL, LLM_TEXT_TOKENS_ANSWER
 except ImportError:
     from .llm_client import LocalLLMClient, LLMError
+    from .research_constants import LLM_JSON_TOKENS_SMALL, LLM_TEXT_TOKENS_ANSWER
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +210,7 @@ arastirma_no: takip/derinlestir ise ilgili araştırmanın numarası, yeni ise 0
             sonuc = await self.llm.call_json(
                 prompt,
                 system_prompt="Sen niyet sınıflandırıcısın. Yalnızca geçerli JSON üretirsin.",
-                max_tokens=120,
+                max_tokens=LLM_JSON_TOKENS_SMALL,
             )
         except LLMError as e:
             logger.warning(f"Niyet sınıflandırma başarısız, yedeğe düşülüyor: {e}")
@@ -292,7 +294,7 @@ Kurallar:
                 "Sen kanıta dayalı araştırma asistanısın. Yalnızca sana verilen "
                 "bulgulara dayanırsın, bilgi uydurmazsın."
             ),
-            max_tokens=1200,
+            max_tokens=LLM_TEXT_TOKENS_ANSWER,
         )
         cevap = (cevap or "").strip()
         if cevap:
@@ -322,7 +324,7 @@ Kurallar:
             sonuc = await self.llm.call_json(
                 prompt,
                 system_prompt="Sen araştırma konusu formüle edersin. Yalnızca geçerli JSON üretirsin.",
-                max_tokens=150,
+                max_tokens=LLM_JSON_TOKENS_SMALL,
             )
             if isinstance(sonuc, dict):
                 konu = str(sonuc.get("konu", "")).strip()

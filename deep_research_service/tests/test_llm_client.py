@@ -74,6 +74,20 @@ class TestKesikJsonKurtarma:
         sonuc = extract_json(ham)
         assert len(sonuc["b"]) == 1
 
+    def test_string_dizisi_kurtarilir(self):
+        # alt_sorular / anahtar_terimler tam bu biçimdedir: nesne değil,
+        # düz string dizisi. Yalnızca } ] kapanışına bakan kurtarma bunları
+        # hiç kurtaramıyordu.
+        ham = '{"konu_turu": "hukuk", "alt_sorular": ["birinci soru", "ikinci sor'
+        sonuc = extract_json(ham)
+        assert sonuc["konu_turu"] == "hukuk"
+        assert sonuc["alt_sorular"] == ["birinci soru"]
+
+    def test_sayi_dizisi_kurtarilir(self):
+        ham = '{"destek": [1, 2, 3'
+        sonuc = extract_json(ham)
+        assert sonuc["destek"] == [1, 2]
+
 
 class TestRepairTruncated:
     def test_kurtarilacak_sey_yoksa_none(self):
