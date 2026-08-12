@@ -31,7 +31,7 @@ The numbers below are an *internal subjective evaluation* on a small set of pers
 - **Computed Confidence Scores** - Every key finding carries a confidence score calculated in Python (source count × reliability × freshness × contradictions), not invented by the LLM
 - **Real Iterative Research** - Unanswered sub-questions trigger additional search rounds automatically
 - **Multilingual Research** - Smart language detection (diacritic-free Turkish included)
-- **Multi-Engine Search** - DuckDuckGo text + news (time-filtered) with Google fallback, domain diversity enforcement
+- **Multi-Engine Search** - DuckDuckGo text + news (time-filtered); queries that come back empty are retried on backup engines (Bing, Yandex, Brave, Mojeek), domain diversity enforcement
 - **WebSocket Real-time** - Live progress updates
 - **Docker Ready** - One-command deployment
 
@@ -231,6 +231,36 @@ Two things to know before running a large model:
 Rule of thumb: keep total model residency under **70% of physical memory**, and
 close browsers and other model servers before loading a 30B-class model.
 
+### Reasoning models
+
+Reasoning models (Qwen3, DeepSeek-R1, gpt-oss) spend their output budget on a
+chain of thought *before* writing the answer. The research pipeline asks for
+structured JSON against a schema it already specifies, so that thinking buys
+nothing — and on a short limit the model is cut off before it emits a single
+character of JSON.
+
+Measured on qwen3.6-27b via LM Studio, one research run: **6 of 6 calls hit the
+token limit, and all 4194 generated tokens were reasoning.** Every planning step
+silently fell back to defaults. Topic analysis took 145 s and returned nothing.
+
+The client therefore disables thinking on every call. The effective switch
+differs per server, and several plausible ones are silently ignored:
+
+| Field | LM Studio (MLX) |
+|-------|-----------------|
+| `reasoning_effort: "none"` | **works** |
+| `chat_template_kwargs.enable_thinking` | ignored |
+| `/no_think` in the prompt | ignored |
+| `reasoning.enabled` | ignored |
+
+Ollama uses `think: false`. Unsupported fields are dropped on the first client
+error and remembered, so no request pays for the same rejection twice. After the
+fix the same two planning steps take **21.8 s instead of 323 s**, and they return
+real results rather than falling back.
+
+To keep the chain of thought — for synthesis quality over speed — construct the
+client with `LocalLLMClient(..., enable_thinking=True)`.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -315,7 +345,7 @@ curl -X DELETE http://localhost:8001/cache
 ### Verified Research Pipeline (`verified_research.py`)
 
 1. **Question analysis** — topic type, time sensitivity (`critical` / `moderate` / `low`), sub-questions
-2. **Multi-engine search** — DuckDuckGo text + news (time-filtered for hot topics), Google fallback, per-domain caps
+2. **Multi-engine search** — DuckDuckGo text + news (time-filtered for hot topics), empty queries retried on backup engines, per-domain caps
 3. **Content + date extraction** — pages fetched in parallel; publication date extracted deterministically from the page itself
 4. **Claim extraction** — structured claims per source (single JSON-mode LLM call per source)
 5. **Cross-verification** — claims merged across sources; confidence computed in Python from independent-source count, source reliability (domain prior + LLM assessment), freshness, and contradictions
@@ -327,7 +357,7 @@ The legacy engine is still available: set `RESEARCH_ENGINE=smart` to use it.
 ## Technical Specifications
 
 - **Framework:** FastAPI + WebSocket
-- **Search Engines:** DuckDuckGo (`ddgs`, text + news) with Google fallback; Tavily optional
+- **Search Engines:** DuckDuckGo (`ddgs`, text + news), with Bing/Yandex/Brave/Mojeek as fallbacks for empty results; Tavily optional
 - **Languages:** Python 3.11+
 - **Deployment:** Docker, Kubernetes ready
 - **Memory:** 16GB+ for 12B-class models; see [Memory sizing](#memory-sizing) for larger ones

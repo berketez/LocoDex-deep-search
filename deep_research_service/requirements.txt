@@ -6,7 +6,6 @@ xhtml2pdf
 pypandoc
 pandoc
 filelock
-googlesearch-python
 requests
 beautifulsoup4
 tenacity>=9.0.0
