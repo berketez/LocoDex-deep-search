@@ -5,7 +5,8 @@ Klasik "ara → özetle → rapor yaz" akışının yerine, araştırmacı gibi 
 kanıt tabanlı bir pipeline:
 
 1. Soru analizi        — konu türü, zaman duyarlılığı, alt sorular (her konu için)
-2. Arama               — çok motorlu (DDG metin + haber, Google yedek),
+2. Arama               — çok motorlu (DDG metin + haber; boş dönen sorgu
+                         yedek motorlarla tekrarlanır),
                          zaman filtreli sorgular, domain çeşitliliği
 3. İçerik + tarih      — paralel indirme; yayın tarihi sayfadan deterministik
                          çıkarılır (date_extract), tazelik skoru hesaplanır
@@ -42,6 +43,9 @@ try:
         SEARCH_FETCH_MAX_BYTES,
         SEARCH_CONTENT_MAX_CHARS,
         SEARCH_MIN_CONTENT_CHARS,
+        SEARCH_BACKEND_FALLBACKS,
+        LEGAL_TOPIC_TYPES,
+        LEGAL_QUERY_RULE,
         LLM_MAX_CONSECUTIVE_FAILURES,
         RESEARCH_MAX_ROUNDS,
         RESEARCH_MIN_SOURCES_FOR_REPORT,
@@ -66,6 +70,10 @@ try:
         CLAIMS_MAX_TOTAL,
         FINDING_MIN_CHARS,
         FINDING_MIN_WORDS,
+        LLM_JSON_TOKENS_SMALL,
+        LLM_JSON_TOKENS_DEFAULT,
+        LLM_JSON_TOKENS_LARGE,
+        LLM_TEXT_TOKENS_REPORT,
     )
     from llm_client import LocalLLMClient, LLMError
     from date_extract import (
@@ -86,6 +94,9 @@ except ImportError:
         SEARCH_FETCH_MAX_BYTES,
         SEARCH_CONTENT_MAX_CHARS,
         SEARCH_MIN_CONTENT_CHARS,
+        SEARCH_BACKEND_FALLBACKS,
+        LEGAL_TOPIC_TYPES,
+        LEGAL_QUERY_RULE,
         LLM_MAX_CONSECUTIVE_FAILURES,
         RESEARCH_MAX_ROUNDS,
         RESEARCH_MIN_SOURCES_FOR_REPORT,
@@ -110,6 +121,10 @@ except ImportError:
         CLAIMS_MAX_TOTAL,
         FINDING_MIN_CHARS,
         FINDING_MIN_WORDS,
+        LLM_JSON_TOKENS_SMALL,
+        LLM_JSON_TOKENS_DEFAULT,
+        LLM_JSON_TOKENS_LARGE,
+        LLM_TEXT_TOKENS_REPORT,
     )
     from .llm_client import LocalLLMClient, LLMError
     from .date_extract import (
@@ -420,7 +435,7 @@ zaman_duyarliligi kuralları:
         result = await self.llm.call_json(
             prompt,
             system_prompt="Sen araştırma planlama asistanısın. Yalnızca geçerli JSON üretirsin.",
-            max_tokens=600,
+            max_tokens=LLM_JSON_TOKENS_DEFAULT,
         )
         analysis = {
             "konu_turu": "genel",
@@ -472,6 +487,10 @@ zaman_duyarliligi kuralları:
         year = self.now.year
         lang_note = "Türkçe" if self.language == "tr" else "İngilizce"
         sub_qs = "\n".join(f"- {q}" for q in analysis["alt_sorular"])
+        # Mevzuat sorularında serbest arama, kanunun kendisini değil hakkında
+        # yazılmış ikincil metni getiriyor; `site:` operatörü aramayı doğrudan
+        # resmî yayına yönlendirir.
+        legal_rule = LEGAL_QUERY_RULE if analysis["konu_turu"] in LEGAL_TOPIC_TYPES else ""
         prompt = f"""Bugünün tarihi: {current_date}
 Araştırma sorusu: {topic}
 Alt sorular:
@@ -486,13 +505,14 @@ Kurallar:
 - İlk 2-3 sorgu {lang_note}, kalanlar İngilizce (global kaynaklar için)
 - Her sorgu farklı bir alt soruyu hedeflesin
 - Zaman duyarlılığı critical ise en az 2 sorguya "{year}" veya "latest" ekle
-- Sorgular kısa ve arama motoru dostu olsun (3-8 kelime)"""
+- Sorgular kısa ve arama motoru dostu olsun (3-8 kelime)
+{legal_rule}"""
 
         try:
             result = await self.llm.call_json(
                 prompt,
                 system_prompt="Sen arama stratejisi uzmanısın. Yalnızca geçerli JSON üretirsin.",
-                max_tokens=500,
+                max_tokens=LLM_JSON_TOKENS_DEFAULT,
             )
         except LLMError as e:
             logger.error(f"Sorgu üretimi LLM hatası, yedek sorgular kullanılıyor: {e}")
@@ -520,7 +540,7 @@ Kurallar:
         return {"critical": "m", "moderate": "y", "low": None}.get(sensitivity)
 
     def _search_sync(self, query, sensitivity, want_news):
-        """Senkron arama (thread'de koşar): DDG metin + haber, Google yedek."""
+        """Senkron arama (thread'de koşar): DDG metin + haber, boşta yedek motorlar."""
         results = []
 
         try:
@@ -548,6 +568,29 @@ Kurallar:
                 except Exception as e:
                     logger.warning(f"DDG metin araması hatası ({query!r}): {e}")
 
+                # Varsayılan motor boş döndüyse sorguyu kaybetme: aynı paketin
+                # diğer motorları farklı zamanlarda yanıt veriyor.
+                if not results:
+                    for backend in SEARCH_BACKEND_FALLBACKS:
+                        try:
+                            for r in ddgs.text(
+                                query,
+                                max_results=SEARCH_RESULTS_PER_QUERY,
+                                backend=backend,
+                            ):
+                                results.append({
+                                    "title": r.get("title", ""),
+                                    "url": r.get("href", ""),
+                                    "snippet": r.get("body", ""),
+                                    "engine": f"ddgs-{backend}",
+                                    "engine_date": None,
+                                })
+                        except Exception:
+                            continue
+                        if results:
+                            logger.info(f"Yedek motor '{backend}' sonuç verdi ({query!r})")
+                            break
+
                 if want_news:
                     try:
                         for r in ddgs.news(
@@ -563,22 +606,7 @@ Kurallar:
                     except Exception as e:
                         logger.warning(f"DDG haber araması hatası ({query!r}): {e}")
         except ImportError:
-            logger.warning("ddgs/duckduckgo_search paketi yok, Google'a düşülüyor")
-
-        if not results:
-            try:
-                from googlesearch import search as google_search
-
-                for url in google_search(query, num_results=SEARCH_RESULTS_PER_QUERY):
-                    results.append({
-                        "title": url,
-                        "url": url,
-                        "snippet": "",
-                        "engine": "google",
-                        "engine_date": None,
-                    })
-            except Exception as e:
-                logger.warning(f"Google araması hatası ({query!r}): {e}")
+            logger.error("ddgs paketi kurulu değil, arama yapılamıyor (pip install ddgs)")
 
         return results
 
@@ -708,7 +736,20 @@ Kurallar:
                         ctype = response.headers.get("Content-Type", "")
                         if "html" not in ctype and "text" not in ctype:
                             return None, "html_disi"
-                        raw = await response.content.read(SEARCH_FETCH_MAX_BYTES)
+                        # StreamReader.read(n) "n bayt oku" DEĞİLDİR: eldeki
+                        # ilk parçayı döndürür: 3 MB istenen bir okuma, 330 KB
+                        # uzunluğundaki bir sayfadan yalnızca 36 KB getirebilir.
+                        # Gelen ilk parça <head>/<nav> olduğu için metin
+                        # çıkmaz ve kaynak "okunabilir metin yok" gerekçesiyle
+                        # elenir. Bu yüzden parça parça okunur.
+                        parcalar = []
+                        okunan = 0
+                        async for parca in response.content.iter_chunked(65536):
+                            parcalar.append(parca)
+                            okunan += len(parca)
+                            if okunan >= SEARCH_FETCH_MAX_BYTES:
+                                break
+                        raw = b"".join(parcalar)
                         html = raw.decode(response.charset or "utf-8", errors="ignore")
                     break
                 except asyncio.TimeoutError:
@@ -787,8 +828,17 @@ Kurallar:
             if source["published_at"]
             else "bilinmiyor"
         )
+        # Alt sorular olmadan model ham soru cümlesini birebir arar ve sorunun
+        # bir PARÇASINI cevaplayan kaynağı eler. Dar kapsamlı sorularda bu,
+        # okunan kaynakların tamamının "ilgisiz" işaretlenmesine ve hiç iddia
+        # çıkmamasına yol açar; model o kaynaklara yüksek güvenilirlik vermiş
+        # olsa bile.
+        sub_qs = "\n".join(f"- {q}" for q in analysis.get("alt_sorular") or [])
         prompt = f"""Bugünün tarihi: {self.now.strftime('%Y-%m-%d')}
 Araştırma sorusu: {topic}
+
+Bu sorunun cevaplanması için gereken alt sorular:
+{sub_qs or "- (belirlenmedi)"}
 
 KAYNAK
 Başlık: {source['title']}
@@ -818,12 +868,17 @@ Görev: Bu kaynağı değerlendir ve araştırma sorusuyla ilgili SOMUT iddialar
 Kurallar:
 - En fazla {CLAIMS_PER_SOURCE} iddia; yalnızca araştırma sorusuna katkısı olanlar
 - İddia, kaynağın SÖYLEDİĞİ şeydir; doğruluğunu sen yargılama
-- Reklam, spam, alakasız içerikse "ilgili": false ver ve iddia listesini boş bırak"""
+- Kaynak sorunun TAMAMINI cevaplamak zorunda değil: alt sorulardan yalnızca
+  birine ışık tutuyorsa da "ilgili": true ver ve o kısmı iddia olarak çıkar.
+  Konunun terminolojisi, tanımı, sınıflandırması, ilgili mevzuat maddesi ya da
+  sayısal sınırı geçiyorsa bu bir katkıdır
+- "ilgili": false YALNIZCA şu durumlarda: reklam/spam, içerik okunamayacak kadar
+  bozuk, ya da sayfa tamamen başka bir konuda"""
 
         result = await self.llm.call_json(
             prompt,
             system_prompt="Sen kanıt çıkarma uzmanısın. Yalnızca geçerli JSON üretirsin.",
-            max_tokens=800,
+            max_tokens=LLM_JSON_TOKENS_DEFAULT,
         )
         if not isinstance(result, dict):
             return None
@@ -923,7 +978,7 @@ Kurallar:
         result = await self.llm.call_json(
             prompt,
             system_prompt="Sen doğrulama analistisin. Yalnızca geçerli JSON üretirsin.",
-            max_tokens=4000,
+            max_tokens=LLM_JSON_TOKENS_LARGE,
             retries=2,
         )
 
@@ -1038,7 +1093,7 @@ Daha önce kullanılan sorgular: {', '.join(self.all_queries[-8:])}"""
             result = await self.llm.call_json(
                 prompt,
                 system_prompt="Sen arama stratejisi uzmanısın. Yalnızca geçerli JSON üretirsin.",
-                max_tokens=300,
+                max_tokens=LLM_JSON_TOKENS_SMALL,
             )
         except LLMError as e:
             logger.error(f"Boşluk analizi LLM hatası: {e}")
@@ -1168,7 +1223,7 @@ information beyond the findings above."""
             system = "You are a senior research analyst. You write evidence-based, date-aware reports."
 
         try:
-            body = await self.llm.call(prompt, system_prompt=system, max_tokens=4000)
+            body = await self.llm.call(prompt, system_prompt=system, max_tokens=LLM_TEXT_TOKENS_REPORT)
         except LLMError as e:
             logger.error(f"Rapor gövdesi üretilemedi: {e}")
             body = "## Doğrudan Cevap\n\nRapor gövdesi üretilemedi (model hatası).\n"
@@ -1228,7 +1283,7 @@ information beyond the findings above."""
             "## Metodoloji\n\n"
             f"- {len(self.all_queries)} arama sorgusu koşuldu (DuckDuckGo metin"
             + (" + haber" if analysis["zaman_duyarliligi"] == "critical" else "")
-            + ", Google yedek)\n"
+            + "; boş dönen sorgular yedek motorlarla tekrarlandı)\n"
             "- Her kaynağın yayın tarihi sayfadan deterministik çıkarıldı "
             "(JSON-LD → meta → time → URL → metin sırasıyla)\n"
             "- Kaynak güvenilirliği = alan adı önceli (0.6) + model değerlendirmesi (0.4)\n"
