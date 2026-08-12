@@ -1,0 +1,524 @@
+\documentclass[12pt,a4paper,oneside]{book}
+
+% ============================================================
+%  PAKET YÜKLEMELERİ
+% ============================================================
+\usepackage{fontspec}
+\defaultfontfeatures{Ligatures=TeX}
+\setmainfont{lmroman10-regular.otf}[
+  Path=/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm/,
+  BoldFont=lmroman10-bold.otf,
+  ItalicFont=lmroman10-italic.otf,
+  BoldItalicFont=lmroman10-bolditalic.otf,
+]
+\setsansfont{lmsans10-regular.otf}[
+  Path=/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm/,
+  BoldFont=lmsans10-bold.otf,
+  ItalicFont=lmsans10-oblique.otf,
+  BoldItalicFont=lmsans10-boldoblique.otf,
+]
+\setmonofont{lmmono10-regular.otf}[
+  Path=/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm/,
+  ItalicFont=lmmono10-italic.otf,
+]
+\usepackage{mathtools}   % amsmath'tan once yuklenmeli
+\usepackage{unicode-math}
+\setmathfont{latinmodern-math.otf}[
+  Path=/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm-math/,
+]
+\usepackage{polyglossia}
+\setdefaultlanguage{turkish}
+\setotherlanguage{english}
+\usepackage{amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc,fit,backgrounds,decorations.pathmorphing}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{hyperref}
+\usepackage{bookmark}
+\usepackage[noabbrev,capitalise]{cleveref}
+\providecommand{\ETC}{etc.}
+
+% Polyglossia + cleveref uyumluluk: cref@language tanimla
+\makeatletter
+\newcommand{\cref@language}{turkish}
+\makeatother
+
+% Turkish crefname tanimlamalari
+\crefname{equation}{Denklem}{Denklemler}
+\crefname{figure}{Sekil}{Sekiller}
+\crefname{table}{Tablo}{Tablolar}
+\crefname{chapter}{Bolum}{Bolumler}
+\crefname{section}{Bolum}{Bolumler}
+\crefname{subsection}{Bolum}{Bolumler}
+\crefname{appendix}{Ek}{Ekler}
+\crefname{algorithm}{Algoritma}{Algoritmalar}
+\crefname{listing}{Listeleme}{Listelemeler}
+\crefname{tanim}{Tanim}{Tanimlar}
+\crefname{teorem}{Teorem}{Teoremler}
+\crefname{sonuc}{Sonuc}{Sonuclar}
+\crefname{ornek}{Ornek}{Ornekler}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage{etoolbox}
+\usepackage{fontawesome5}
+
+% ============================================================
+%  KOYU ARKA PLAN AYARLARI (Referans template'e uygun)
+% ============================================================
+\geometry{
+  a4paper,
+  left=2.5cm,
+  right=2.5cm,
+  top=2.5cm,
+  bottom=2.5cm,
+  headheight=25pt
+}
+
+% Ana renkler - SİMSİYAH arka plan tema
+\definecolor{pageBG}{HTML}{0A0A0A}        % Simsiyah arka plan
+\definecolor{textWhite}{HTML}{E8E8E8}     % Beyaz metin
+\definecolor{chapterBlue}{HTML}{6BA3D6}   % Açık mavi başlık
+\definecolor{sectionBlue}{HTML}{5B93C6}   % Bölüm başlığı
+\definecolor{linkBlue}{HTML}{7BB3E6}      % Hyperlink rengi
+\definecolor{codeGreen}{HTML}{98C379}     % Kod yeşili
+\definecolor{codeYellow}{HTML}{E5C07B}    % Kod sarısı
+\definecolor{codeRed}{HTML}{E06C75}       % Kod kırmızısı
+\definecolor{codePurple}{HTML}{C678DD}    % Kod moru
+\definecolor{codeBG}{HTML}{111111}        % Kod arka plan (siyaha yakın)
+\definecolor{boxBG}{HTML}{1A1A1A}         % Kutu arka plan (çok koyu gri)
+\definecolor{boxBorder}{HTML}{333333}     % Kutu kenarlık (koyu gri)
+\definecolor{boxTitleBG}{HTML}{1A1A2E}    % Kutu başlık arka plan (çok koyu lacivert)
+\definecolor{warnOrange}{HTML}{E5A04B}    % Uyarı turuncu
+
+% Arka plan rengi
+\usepackage{pagecolor}
+\pagecolor{pageBG}
+\color{textWhite}
+
+% Hyperref ayarları
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkBlue,
+  citecolor=linkBlue,
+  urlcolor=linkBlue,
+  bookmarksopen=true,
+  pdfauthor={Berke Tezgocen},
+  pdftitle={LocoDex Deep Search - Teknik Dokuman},
+  pdfsubject={AI Deep Research System},
+}
+
+% ============================================================
+%  BAŞLIK FORMATLARI
+% ============================================================
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{chapterBlue}}
+  {\chaptertitlename\ \thechapter}{20pt}{\Huge}
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{sectionBlue}}
+  {\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{sectionBlue!80!textWhite}}
+  {\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{sectionBlue!60!textWhite}}
+  {\thesubsubsection}{1em}{}
+
+% ============================================================
+%  SAYFA HEADER/FOOTER
+% ============================================================
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\color{sectionBlue!60}\small\leftmark}
+\fancyhead[R]{\color{sectionBlue!60}\small\thepage}
+\fancyfoot[C]{\color{sectionBlue!40}\small LocoDex Deep Search --- Teknik Dok\"{u}man}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{boxBorder}\leaders\hrule height \headrulewidth\hfill}}
+
+% ============================================================
+%  ÖZEL KUTULAR (tcolorbox)
+% ============================================================
+
+% Özet Kutusu (her bölüm sonunda)
+\newtcolorbox{ozet}{
+  enhanced,
+  colback=boxBG,
+  coltext=textWhite,
+  colframe=chapterBlue!70!black,
+  colbacktitle=boxTitleBG,
+  coltitle=chapterBlue,
+  title={\faIcon{bookmark} Bu B\"{o}l\"{u}m\"{u}n \"{O}zeti},
+  fonttitle=\bfseries,
+  breakable,
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=1pt,
+  arc=3pt
+}
+
+% Formül/Teorem Kutusu
+\newtcolorbox{formulbox}[1][]{
+  enhanced,
+  colback=codeBG,
+  coltext=textWhite,
+  colframe=codePurple!40!black,
+  colbacktitle=boxTitleBG,
+  coltitle=codePurple,
+  title={#1},
+  fonttitle=\bfseries,
+  breakable,
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=0.8pt,
+  arc=2pt
+}
+
+% Dikkat Kutusu
+\newtcolorbox{dikkat}{
+  enhanced,
+  colback=boxBG,
+  coltext=textWhite,
+  colframe=warnOrange!50!black,
+  colbacktitle=boxTitleBG,
+  coltitle=warnOrange,
+  title={\faIcon{exclamation-triangle} Dikkat},
+  fonttitle=\bfseries,
+  breakable,
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=0.8pt,
+  arc=2pt
+}
+
+% Kod Referans Kutusu
+\newtcolorbox{kodref}[1][]{
+  enhanced,
+  colback=codeBG,
+  coltext=textWhite,
+  colframe=codeGreen!30!black,
+  colbacktitle=boxTitleBG,
+  coltitle=codeGreen,
+  title={\faIcon{code} #1},
+  fonttitle=\bfseries\small,
+  breakable,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  boxrule=0.6pt,
+  arc=2pt
+}
+
+% Mülakat Sorusu Kutusu
+\newtcolorbox{mulakat}[1][]{
+  enhanced,
+  colback=boxBG,
+  coltext=textWhite,
+  colframe=linkBlue!40!black,
+  colbacktitle=boxTitleBG,
+  coltitle=linkBlue,
+  title={\faIcon{question-circle} M\"{u}lakat Sorusu: #1},
+  fonttitle=\bfseries,
+  breakable,
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=0.8pt,
+  arc=3pt
+}
+
+% ============================================================
+%  KOD LİSTELEME AYARLARI
+% ============================================================
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  basicstyle=\ttfamily\small\color{textWhite},
+  keywordstyle=\color{codePurple}\bfseries,
+  stringstyle=\color{codeGreen},
+  commentstyle=\color{sectionBlue!50}\itshape,
+  numberstyle=\tiny\color{sectionBlue!40},
+  backgroundcolor=\color{codeBG},
+  frame=single,
+  rulecolor=\color{boxBorder},
+  numbers=left,
+  numbersep=8pt,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+  captionpos=b,
+  morekeywords={async,await,self,True,False,None},
+  emph={FastAPI,WebSocket,BaseModel,Field,aiohttp,asyncio},
+  emphstyle=\color{codeYellow},
+}
+\lstset{style=pythonstyle}
+
+% ============================================================
+%  TİKZ GLOBAL AYARLARI - Koyu tema uyumu
+% ============================================================
+\tikzset{
+  every node/.append style={text=textWhite},
+  every label/.append style={text=textWhite},
+}
+
+% ============================================================
+%  TEOREM ORTAMLARI
+% ============================================================
+\theoremstyle{definition}
+\newtheorem{tanim}{Tan{\i}m}[chapter]
+\newtheorem{teorem}{Teorem}[chapter]
+\newtheorem{sonuc}[teorem]{Sonu\c{c}}
+\newtheorem{ornek}{\"Ornek}[chapter]
+
+% ============================================================
+%  BELGE BAŞLANGICI
+% ============================================================
+\begin{document}
+
+% ============================================================
+%  KAPAK SAYFASI
+% ============================================================
+\begin{titlepage}
+\centering
+\vspace*{4cm}
+
+{\Huge\bfseries\color{chapterBlue} LocoDex Deep Search}\\[0.8cm]
+{\Huge\bfseries\color{chapterBlue} Teknik Dok\"{u}man}\\[1.5cm]
+
+{\Large\itshape\color{sectionBlue} Lokal AI Derin Ara\c{s}t{\i}rma Sistemi ---\\[0.3cm]
+Kapsaml{\i} Teknik Kitap}\\[2cm]
+
+{\Large\color{textWhite} Berke Tezg\"{o}\c{c}en}\\[0.3cm]
+{\large\color{sectionBlue!70} Fizik M\"{u}hendisli\u{g}i --- \.{I}T\"{U}}\\[0.3cm]
+{\large\color{sectionBlue!70} 2026}\\[3cm]
+
+{\normalsize\color{sectionBlue!50}
+Bu dok\"{u}man, LocoDex Deep Search projesinin t\"{u}m algoritmalar{\i}n{\i},\\
+matematik temellerini ve tasar{\i}m kararlar{\i}n{\i} A'dan Z'ye a\c{c}{\i}klar.}\\[3cm]
+
+{\small\color{sectionBlue!40} Haz{\i}rlayan: Codex AI Dan{\i}\c{s}man Sistemi\\
+Son g\"{u}ncelleme: 15 Mart 2026}
+\end{titlepage}
+
+% ============================================================
+%  İÇİNDEKİLER
+% ============================================================
+\tableofcontents
+\newpage
+
+% ============================================================
+%  BÖLÜM 1: GİRİŞ VE MOTİVASYON
+% ============================================================
+\chapter{Giri\c{s} ve Motivasyon}
+\label{chap:giris}
+
+\section{Problem Tan{\i}m{\i}: Bilgiye Eri\c{s}im Krizi}
+\label{sec:problem}
+
+G\"{u}n\"{u}m\"{u}zde ara\c{s}t{\i}rma yapmak isteyen bir ki\c{s}i \c{s}u sorunlarla kar\c{s}{\i}la\c{s}{\i}r: (1)~bilgi par\c{c}alanm{\i}\c{s}l{\i}\u{g}{\i} --- bir konuyu anlamak i\c{c}in d\"{u}zinelerce kaynak taranmal{\i}d{\i}r; (2)~g\"{u}venilirlik sorunu --- web'deki bilginin \"{o}nemli bir k{\i}sm{\i} yanl{\i}\c{s}, eski veya \"{o}nyarg{\i}l{\i}d{\i}r; (3)~gizlilik endi\c{s}esi --- ticari AI ara\c{s}t{\i}rma ara\c{c}lar{\i} (Grok 3 Deep Search, ChatGPT Search, Perplexity) kullan{\i}c{\i} sorgular{\i}n{\i} sunucular{\i}na g\"{o}nderir.
+
+LocoDex Deep Search bu \"{u}\c{c} sorunu ayn{\i} anda \c{c}\"{o}zer: \textbf{tamamen lokal} \c{c}al{\i}\c{s}an, \textbf{\c{c}ok dilli}, \textbf{kaynak g\"{u}venilirli\u{g}i de\u{g}erlendiren} bir AI derin ara\c{s}t{\i}rma servisidir.
+
+\subsection{Neden \"{O}nemli?}
+
+\subsubsection{End\"{u}stri Ba\u{g}lam{\i}}
+Ticari AI ara\c{s}t{\i}rma servisleri (Perplexity, Grok Deep Search) y{\i}ll{\i}k milyarlarca dolar gelir \"{u}retmektedir. Ancak \c{s}u s{\i}n{\i}rlamalar{\i} vard{\i}r:
+\begin{itemize}
+  \item \textbf{Gizlilik:} T\"{u}m sorgular bulut sunucular{\i}na g\"{o}nderilir
+  \item \textbf{Maliyet:} API ba\c{s}{\i}na \"{u}cretlendirme (\$20--100/ay)
+  \item \textbf{Ba\u{g}{\i}ml{\i}l{\i}k:} Servis kapan{\i}rsa kullan{\i}c{\i} \c{c}aresiz kal{\i}r
+  \item \textbf{Sans\"{u}r:} Baz{\i} konularda filtreleme uygulan{\i}r
+\end{itemize}
+
+\subsubsection{Akademik Ba\u{g}lam}
+Ara\c{s}t{\i}rma otomasyonu (research automation), Retrieval-Augmented Generation (RAG) ve agentic AI sistemleri akademik literat\"{u}rde h{\i}zla b\"{u}y\"{u}yen alanlardan biridir. LocoDex, bu alanlardaki teorik temelleri pratik bir \"{u}r\"{u}ne d\"{o}n\"{u}\c{s}t\"{u}r\"{u}r.
+
+\subsection{Mevcut \c{C}\"{o}z\"{u}mler ve S{\i}n{\i}rlamalar{\i}}
+
+\begin{table}[H]
+\centering
+\caption{Mevcut AI Ara\c{s}t{\i}rma Servislerinin Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:comparison}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcccc}
+\toprule
+\color{chapterBlue}\textbf{Servis} & \color{chapterBlue}\textbf{\"{O}zellik} & \color{chapterBlue}\textbf{Lokal} & \color{chapterBlue}\textbf{\"{U}cretsiz} & \color{chapterBlue}\textbf{\c{C}ok Dilli} & \color{chapterBlue}\textbf{A\c{c}{\i}k Kaynak} \\
+\midrule
+Perplexity & Bulut AI arama & \color{codeRed}\texttimes & \color{codeRed}\texttimes & \color{codeGreen}\checkmark & \color{codeRed}\texttimes \\
+Grok Deep Search & X platformu entegrasyonu & \color{codeRed}\texttimes & \color{codeRed}\texttimes & \color{codeGreen}\checkmark & \color{codeRed}\texttimes \\
+ChatGPT Search & OpenAI bulut & \color{codeRed}\texttimes & \color{codeRed}\texttimes & \color{codeGreen}\checkmark & \color{codeRed}\texttimes \\
+\textbf{LocoDex} & \textbf{Lokal AI ara\c{s}t{\i}rma} & \color{codeGreen}\checkmark & \color{codeGreen}\checkmark & \color{codeGreen}\checkmark & \color{codeGreen}\checkmark \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Bu Projenin Yakla\c{s}{\i}m{\i} ve Fark{\i}}
+
+LocoDex Deep Search \c{s}u temel felsefe \"{u}zerine in\c{s}a edilmi\c{s}tir:
+
+\begin{enumerate}
+  \item \textbf{Lokal-\"{O}ncelikli (Local-First):} T\"{u}m LLM \c{c}{\i}kar{\i}m{\i} kullan{\i}c{\i}n{\i}n bilgisayar{\i}nda ger\c{c}ekle\c{s}ir. Hi\c{c}bir veri d{\i}\c{s}ar{\i}ya g\"{o}nderilmez.
+  \item \textbf{Provider-Agnostik:} LiteLLM soyutlama katman{\i} sayesinde Ollama, LM~Studio veya Together~AI aras{\i}nda ge\c{c}i\c{s} yap{\i}labilir.
+  \item \textbf{\.{I}teratif Derinlik:} Tek seferde de\u{g}il, iteratif olarak ara\c{s}t{\i}rma yap{\i}l{\i}r; eksik alanlar tespit edilip doldurulur.
+  \item \textbf{Kaynak De\u{g}erlendirmesi:} Her kaynak g\"{u}venilirlik skoru al{\i}r; d\"{u}\c{s}\"{u}k skorlu kaynaklar filtrelenir.
+\end{enumerate}
+
+\subsection{Performans Metrikleri (Subjektif De\u{g}erlendirme)}
+
+Apple~M4 Max \"{u}zerinde yap{\i}lan \emph{informal/subjektif} g\"{o}zlemler. Bu de\u{g}erler kapsaml{\i} bir benchmark de\u{g}ildir; halka a\c{c}{\i}k bir test seti, anotat\"{o}r paneli ya da istatistiksel \"{o}rneklem b\"{u}y\"{u}kl\"{u}\u{g}\"{u} kullan{\i}lmam{\i}\c{s}t{\i}r:
+\begin{itemize}
+  \item \textbf{Do\u{g}ruluk (subjektif, anekdotal):} $\sim$9/10 (Gemma~3 12B modeli ile, ki\c{s}isel test sorgular{\i}nda)
+  \item \textbf{Ortalama ara\c{s}t{\i}rma s\"{u}resi:} $\sim$3 dakika
+  \item \textbf{Kullan{\i}lan kaynak say{\i}s{\i}:} Ortalama 10--20 web kayna\u{g}{\i}
+  \item \textbf{Desteklenen dil say{\i}s{\i}:} 4 (T\"{u}rk\c{c}e, \.{I}ngilizce, Frans{\i}zca, Almanca)
+\end{itemize}
+
+\begin{kritik}
+Yukar{\i}daki ``9/10'' de\u{g}eri \emph{ki\c{s}isel/anekdotal} bir g\"{o}zlemdir; resmi bir benchmark protokol\"{u}ne dayanm{\i}yor. Rigorous bir de\u{g}erlendirme i\c{c}in: (i) HotpotQA, GAIA veya 2WikiMultihopQA gibi kamuya a\c{c}{\i}k bir test seti, (ii) ba\u{g}{\i}ms{\i}z anotat\"{o}r veya k\"{o}r LLM-as-a-Judge protokol\"{u}, (iii) en az 50--100 sorgu ve g\"{u}ven aral{\i}klar{\i} (bootstrapped CI) gerekir. Mevcut \texttt{evals.py} bu altyap{\i}y{\i} sa\u{g}lar; ancak \c{s}u an i\c{c}in repo'da yay{\i}mlanm{\i}\c{s} bir benchmark sonucu yoktur.
+\end{kritik}
+
+\subsection{Ders Notunun Organizasyonu}
+
+Bu kitap \c{s}u \c{s}ekilde organize edilmi\c{s}tir:
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:mimari}:} Sistem mimarisi --- FastAPI, WebSocket, asenkron programlama modeli.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:llm}:} LLM entegrasyonu --- provider abstraction, retry mekanizmas{\i}, prompt engineering.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:arama}:} Web arama sistemi --- arama motorlar{\i}, i\c{c}erik \c{c}{\i}karma, bilgi alma teorisi.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:guvenilirlik}:} Kaynak g\"{u}venilirlik de\u{g}erlendirmesi --- dil alg{\i}lama, NLP teknikleri.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:pipeline}:} Ara\c{s}t{\i}rma pipeline'{\i} --- iteratif derinle\c{s}tirme, rapor sentezi.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:podcast}:} Podcast \"{u}retim sistemi --- TTS, ses sentezi.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:degerlendirme}:} De\u{g}erlendirme ve test --- LLM-as-a-judge, metrikler.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:dagitim}:} Da\u{g}{\i}t{\i}m ve platform uyumlulu\u{g}u --- Docker, cross-platform.
+
+\textbf{B\"{o}l\"{u}m~\ref{chap:retrospektif}:} Tasar{\i}m kararlar{\i} ve retrospektif.
+
+\textbf{Ek~\ref{app:parametreler}:} Parametre tablosu.
+
+\textbf{Ek~\ref{app:mulakat}:} M\"{u}lakat haz{\i}rl{\i}k --- 20 teknik soru ve cevaplar{\i}.
+
+\begin{ozet}
+LocoDex Deep Search, ticari AI ara\c{s}t{\i}rma servislerine tamamen lokal, a\c{c}{\i}k kaynak bir alternatiftir. Gizlilik, maliyet ve ba\u{g}{\i}ms{\i}zl{\i}k sorunlar{\i}n{\i} \c{c}\"{o}zer. Gemma~3 12B modeli ile ki\c{s}isel/subjektif kullan{\i}m testlerinde 9/10 civar{\i} bir kalite g\"{o}zlemlenmi\c{s}tir; resmi/kamuya a\c{c}{\i}k bir benchmark hen\"{u}z yap{\i}lmam{\i}\c{s}t{\i}r. Bu kitap, projenin her teknik detay{\i}n{\i} matematik temelleriyle a\c{c}{\i}klar.
+\end{ozet}
+
+
+% ============================================================
+%  BÖLÜM 2: SİSTEM MİMARİSİ
+% ============================================================
+\chapter{Sistem Mimarisi}
+\label{chap:mimari}
+
+% CODEX-1 içeriği buraya gelecek
+\input{chapters/ch02_mimari}
+
+
+% ============================================================
+%  BÖLÜM 3: LLM ENTEGRASYONU
+% ============================================================
+\chapter{LLM Entegrasyonu ve Provider Abstraction}
+\label{chap:llm}
+
+% CODEX-2 içeriği buraya gelecek
+\input{chapters/ch03_llm}
+
+
+% ============================================================
+%  BÖLÜM 4: WEB ARAMA SİSTEMİ
+% ============================================================
+\chapter{Web Arama Sistemi ve Bilgi Toplama}
+\label{chap:arama}
+
+% CODEX-3 içeriği buraya gelecek
+\input{chapters/ch04_arama}
+
+
+% ============================================================
+%  BÖLÜM 5: KAYNAK GÜVENİLİRLİK DEĞERLENDİRMESİ
+% ============================================================
+\chapter{Kaynak G\"{u}venilirlik De\u{g}erlendirmesi ve Dil Alg{\i}lama}
+\label{chap:guvenilirlik}
+
+% CODEX-4 içeriği buraya gelecek
+\input{chapters/ch05_guvenilirlik}
+
+
+% ============================================================
+%  BÖLÜM 6: ARAŞTIRMA PİPELINE
+% ============================================================
+\chapter{\.{I}teratif Ara\c{s}t{\i}rma Pipeline'{\i} ve Rapor Sentezi}
+\label{chap:pipeline}
+
+% CODEX-5 kısmen buraya gelecek
+\input{chapters/ch06_pipeline}
+
+
+% ============================================================
+%  BÖLÜM 7: PODCAST ÜRETİM SİSTEMİ
+% ============================================================
+\chapter{Podcast \"{U}retim Sistemi}
+\label{chap:podcast}
+
+% CODEX-5 kısmen buraya gelecek
+\input{chapters/ch07_podcast}
+
+
+% ============================================================
+%  BÖLÜM 8: DEĞERLENDİRME VE TEST
+% ============================================================
+\chapter{De\u{g}erlendirme Sistemi ve Kalite Kontrol}
+\label{chap:degerlendirme}
+
+% CODEX-6 kısmen buraya gelecek
+\input{chapters/ch08_degerlendirme}
+
+
+% ============================================================
+%  BÖLÜM 9: DAĞITIM VE PLATFORM UYUMLULUĞU
+% ============================================================
+\chapter{Da\u{g}{\i}t{\i}m Mimarisi ve Platform Uyumlulu\u{g}u}
+\label{chap:dagitim}
+
+% CODEX-6 kısmen buraya gelecek
+\input{chapters/ch09_dagitim}
+
+
+% ============================================================
+%  BÖLÜM 10: TASARIM KARARLARI VE RETROSPEKTİF
+% ============================================================
+\chapter{Tasar{\i}m Kararlar{\i} ve Retrospektif}
+\label{chap:retrospektif}
+
+\input{chapters/ch10_retrospektif}
+
+
+% ============================================================
+%  EKLER
+% ============================================================
+\appendix
+
+\chapter{Parametre Tablosu}
+\label{app:parametreler}
+
+\input{chapters/appA_parametreler}
+
+
+\chapter{M\"{u}lakat Haz{\i}rl{\i}k: 20 Teknik Soru ve Cevap}
+\label{app:mulakat}
+
+\input{chapters/appB_mulakat}
+
+
+\end{document}

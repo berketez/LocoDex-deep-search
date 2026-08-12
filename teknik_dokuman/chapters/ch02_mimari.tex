@@ -1,0 +1,1608 @@
+% ============================================================
+%  BOLUM 2: SISTEM MIMARISI
+%  FastAPI, WebSocket, Async Programlama, Microservice Patterns
+% ============================================================
+
+% ============================================================
+%  KISIM 1: FastAPI + WebSocket MIMARISI
+% ============================================================
+
+\section{HTTP REST ve WebSocket: Bant Geni\c{s}li\u{g}i ve Gecikme Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{sec:http-vs-ws}
+
+LocoDex Deep Search, istemci ile sunucu aras{\i}ndaki ileti\c{s}imi WebSocket
+\"{u}zerinden ger\c{c}ekle\c{s}tirir. Bu b\"{o}l\"{u}mde bu tercihin neden yap{\i}ld{\i}\u{g}{\i}n{\i}
+matematiksel temellerle inceliyoruz.
+
+\subsection{HTTP/1.1 Protokol\"{u}n\"{u}n Bant Geni\c{s}li\u{g}i Y\"{u}k\"{u}}
+\label{sec:http-overhead}
+
+HTTP/1.1 protokol\"{u}nde her istek-yan{\i}t d\"{o}ng\"{u}s\"{u} sabit bir overhead ta\c{s}{\i}r.
+Bu overhead, HTTP ba\c{s}l{\i}klar{\i}ndan (header) kaynaklan{\i}r.
+
+\begin{formulbox}[HTTP/1.1 Ba\c{s}l{\i}k Y\"{u}k\"{u} Hesab{\i}]
+Tipik bir HTTP GET iste\u{g}i \c{s}u yap{\i}dad{\i}r:
+\begin{lstlisting}
+GET /research HTTP/1.1\r\n
+Host: localhost:8001\r\n
+Content-Type: application/json\r\n
+Accept: application/json\r\n
+Connection: keep-alive\r\n
+User-Agent: Mozilla/5.0...\r\n
+\r\n
+\end{lstlisting}
+Minimum ba\c{s}l{\i}k boyutu: $\sim$200--800~byte (ortalama $\sim$400~byte). Yan{\i}t ba\c{s}l{\i}\u{g}{\i} da benzerdir: $\sim$200--600~byte.
+\end{formulbox}
+
+Her istek-yan{\i}t \c{c}iftinde toplam HTTP y\"{u}k\"{u}:
+\begin{equation}
+\label{eq:http-overhead}
+C_{\mathrm{HTTP}} = H_{\mathrm{req}} + H_{\mathrm{resp}} \approx 400 + 400 = 800 \;\text{byte}
+\end{equation}
+
+\subsection{WebSocket Frame Y\"{u}k\"{u} (RFC~6455)}
+\label{sec:ws-frame-overhead}
+
+RFC~6455'e g\"{o}re bir WebSocket frame'inin yap{\i}s{\i}:
+
+\begin{itemize}
+  \item \texttt{FIN + RSV + Opcode}: 1~byte
+  \item \texttt{MASK + Payload length}: 1~byte (payload ${}<126$ byte), 3~byte (payload ${}<65536$ byte), 9~byte (payload $\geq 65536$ byte)
+  \item \texttt{Masking key}: 4~byte (client $\to$ server), 0~byte (server $\to$ client)
+\end{itemize}
+
+Minimum WebSocket frame overhead:
+\begin{align}
+\label{eq:ws-overhead}
+C_{\mathrm{WS}}^{\mathrm{client}} &= 2 + 4 = 6 \;\text{byte} \quad \text{(client} \to \text{server, k\"{u}\c{c}\"{u}k mesaj)} \\
+C_{\mathrm{WS}}^{\mathrm{server}} &= 2 + 0 = 2 \;\text{byte} \quad \text{(server} \to \text{client, k\"{u}\c{c}\"{u}k mesaj)}
+\end{align}
+
+\subsection{Bant Geni\c{s}li\u{g}i Tasarruf Form\"{u}l\"{u}}
+\label{sec:bandwidth-saving}
+
+$N$ adet mesaj i\c{c}in toplam overhead kar\c{s}{\i}la\c{s}t{\i}rmas{\i}:
+
+\begin{equation}
+\label{eq:bandwidth-http}
+\text{HTTP toplam overhead} = N \cdot C_{\mathrm{HTTP}} = 800N \;\text{byte}
+\end{equation}
+
+\begin{equation}
+\label{eq:bandwidth-ws}
+\text{WS toplam overhead} = C_{\mathrm{handshake}} + N \cdot C_{\mathrm{WS}}^{\mathrm{avg}} = 400 + 6N \;\text{byte}
+\end{equation}
+
+Burada $C_{\mathrm{handshake}} \approx 400$~byte (tek seferlik HTTP Upgrade iste\u{g}i) ve $C_{\mathrm{WS}}^{\mathrm{avg}} \approx 6$~byte (ortalama frame overhead). Tasarruf:
+
+\begin{equation}
+\label{eq:saving}
+\Delta = 800N - (400 + 6N) = 794N - 400 \;\text{byte}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Mesaj say{\i}s{\i}na g\"{o}re bant geni\c{s}li\u{g}i tasarrufu}
+\label{tab:bandwidth}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{0.85\textwidth}{rrrr}
+\toprule
+\color{chapterBlue}\textbf{$N$} & \color{chapterBlue}\textbf{HTTP (byte)} & \color{chapterBlue}\textbf{WS (byte)} & \color{chapterBlue}\textbf{Tasarruf} \\
+\midrule
+1    & 800      & 406   & \%49 \\
+10   & 8\,000   & 460   & \%94 \\
+40   & 32\,000  & 640   & \%98 \\
+100  & 80\,000  & 1\,000 & \%99 \\
+1000 & 800\,000 & 6\,400 & \%99.2 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{kodref}{server.py --- Progress Mesajlar{\i}}
+LocoDex'te her ara\c{s}t{\i}rma oturumunda ortalama 30--50 progress mesaj{\i} g\"{o}nderilir:
+\begin{lstlisting}
+await websocket.send_json({
+    "type": "progress", "step": 0.05,
+    "message": "Arastirma stratejisi belirleniyor..."
+})
+# ... 30-50 arasi mesaj
+await websocket.send_json({
+    "type": "result", "data": answer
+})
+\end{lstlisting}
+$N \approx 40$ i\c{c}in HTTP overhead: 32\,000~byte, WS overhead: 640~byte. \textbf{Tasarruf oran{\i}: \%98.}
+\end{kodref}
+
+
+\subsection{Gecikme (Latency) Analizi}
+\label{sec:latency}
+
+HTTP/1.1 i\c{c}in her istek-yan{\i}t d\"{o}ng\"{u}s\"{u}ndeki gecikme bile\c{s}enleri:
+
+\begin{equation}
+\label{eq:http-latency}
+T_{\mathrm{HTTP}} = T_{\mathrm{TCP}} + T_{\mathrm{TLS}} + T_{\mathrm{req}} + T_{\mathrm{process}} + T_{\mathrm{resp}} = 3\,\text{RTT} + T_{\mathrm{data}}
+\end{equation}
+
+\texttt{Connection: keep-alive} ile sonraki isteklerde:
+\begin{equation}
+\label{eq:http-keepalive}
+T_{\mathrm{HTTP}}^{\mathrm{keepalive}} = 1\,\text{RTT} + T_{\mathrm{data}}
+\end{equation}
+
+WebSocket i\c{c}in:
+\begin{align}
+\label{eq:ws-latency}
+T_{\mathrm{WS}}^{\mathrm{handshake}} &= T_{\mathrm{TCP}} + T_{\mathrm{TLS}} + T_{\mathrm{Upgrade}} = 4\,\text{RTT} \quad \text{(tek seferlik)} \\
+T_{\mathrm{WS}}^{\mathrm{message}}   &= T_{\mathrm{data}} \quad \text{(ek RTT yok!)}
+\end{align}
+
+\begin{dikkat}
+Internet \"{u}zerinden RTT $\approx 50$~ms iken, 50 progress mesaj{\i} i\c{c}in HTTP polling $50 \times 50\text{ms} = 2{.}5$~s ek gecikme yarat{\i}r. WebSocket'te bu s{\i}f{\i}rd{\i}r --- sunucu do\u{g}rudan push eder.
+\end{dikkat}
+
+
+\subsection{Protokol Se\c{c}imi: Neden WebSocket?}
+\label{sec:protocol-choice}
+
+\begin{table}[H]
+\centering
+\caption{\.{I}leti\c{s}im protokollerinin kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:protocol-comparison}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXXX}
+\toprule
+\color{chapterBlue}\textbf{Y\"{o}ntem} & \color{chapterBlue}\textbf{Avantaj} & \color{chapterBlue}\textbf{Dezavantaj} & \color{chapterBlue}\textbf{LocoDex Uygunlu\u{g}u} \\
+\midrule
+HTTP Polling       & Basit implementasyon      & $N \times$ overhead, gecikme     & K\"{o}t\"{u} \\
+HTTP Long Polling  & Server push m\"{u}mk\"{u}n        & Her mesajda yeni ba\u{g}lant{\i}  & Orta \\
+SSE                & Hafif, tek y\"{o}nl\"{u} push    & Sadece server $\to$ client      & \.{I}yi, ama client mesaj{\i} laz{\i}m \\
+\textbf{WebSocket} & \textbf{Full-duplex, d\"{u}\c{s}\"{u}k overhead} & Handshake karma\c{s}{\i}kl{\i}\u{g}{\i} & \textbf{En iyi} \\
+HTTP/2 Push        & Multiplexed               & Taray{\i}c{\i} deste\u{g}i k{\i}s{\i}tl{\i}     & Overkill \\
+gRPC Streaming     & Y\"{u}ksek performans          & Protobuf gerektirir             & Overkill \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+LocoDex'te istemci hem ara\c{s}t{\i}rma iste\u{g}i g\"{o}nderir (client $\to$ server) hem de progress g\"{u}ncellemelerini al{\i}r (server $\to$ client). Bu \c{c}ift y\"{o}nl\"{u} gereksinim SSE'yi d{\i}\c{s}lar. WebSocket \textbf{do\u{g}ru se\c{c}imdir}.
+
+\subsection{Hesaplama Karma\c{s}{\i}kl{\i}\u{g}{\i}}
+\label{sec:ws-complexity}
+
+\begin{itemize}
+  \item WebSocket handshake: $O(1)$ --- tek seferlik
+  \item Mesaj g\"{o}nderme: $O(L)$, burada $L =$ mesaj uzunlu\u{g}u (byte)
+  \item Maskeleme (XOR): $O(L)$ --- her byte i\c{c}in XOR i\c{s}lemi
+  \item $N$ mesaj toplam{\i}: $O(N \cdot \bar{L})$
+  \item HTTP'de ayn{\i} i\c{s}: $O(N \cdot (H + \bar{L}))$, burada $H =$ ba\c{s}l{\i}k boyutu
+\end{itemize}
+
+\subsection{S{\i}n{\i}rlamalar}
+\label{sec:ws-limitations}
+
+\begin{enumerate}
+  \item \textbf{Proxy/Firewall uyumsuzlu\u{g}u:} Baz{\i} kurumsal proxy'ler WebSocket'i engelleyebilir (HTTP CONNECT tunnel gerektirir).
+  \item \textbf{Durum y\"{o}netimi:} Sunucu her ba\u{g}lant{\i} i\c{c}in bellek tutar. 10\,000 e\c{s} zamanl{\i} ba\u{g}lant{\i} i\c{c}in $\sim$10\,000 $\times$ 64\,KB $=$ 640~MB.
+  \item \textbf{Yeniden ba\u{g}lant{\i}:} HTTP otomatik retry yapar; WebSocket'te istemci taraf{\i}nda reconnection mant{\i}\u{g}{\i} yaz{\i}lmal{\i}d{\i}r.
+  \item \textbf{Y\"{u}k dengeleyici:} Sticky session gerektirir (WebSocket ba\u{g}lant{\i}s{\i} tek sunucuya ba\u{g}l{\i}d{\i}r).
+\end{enumerate}
+
+
+% ============================================================
+\section{WebSocket Handshake Protokol\"{u} (RFC~6455)}
+\label{sec:ws-handshake}
+
+\subsection{Handshake Mekanizmas{\i}}
+\label{sec:handshake-mechanism}
+
+WebSocket ba\u{g}lant{\i}s{\i} bir HTTP Upgrade iste\u{g}i ile ba\c{s}lar.
+A\c{s}a\u{g}{\i}daki TikZ diyagram{\i} bu s\"{u}reci g\"{o}stermektedir:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=0.4cm,
+  block/.style={rectangle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum width=3.5cm, minimum height=0.8cm, rounded corners=2pt,
+    font=\small},
+  arrow/.style={->, >=stealth, thick, color=chapterBlue},
+  label/.style={font=\scriptsize, color=sectionBlue}
+]
+  % Client and Server columns
+  \node[block, fill=codeBG] (client) {\textbf{Client}};
+  \node[block, fill=codeBG, right=5cm of client] (server) {\textbf{Server}};
+
+  % Vertical timeline lines
+  \draw[thick, color=boxBorder] (client.south) -- ++(0,-9);
+  \draw[thick, color=boxBorder] (server.south) -- ++(0,-9);
+
+  % Step 1: HTTP Upgrade Request
+  \draw[arrow] ([yshift=-1.2cm]client.south) -- node[above, label] {GET /research\_ws HTTP/1.1} node[below, label] {Upgrade: websocket} ([yshift=-1.2cm]server.south);
+
+  % Step 2: 101 Switching Protocols
+  \draw[arrow] ([yshift=-3cm]server.south) -- node[above, label] {HTTP/1.1 101 Switching Protocols} node[below, label] {Sec-WebSocket-Accept: s3pP...} ([yshift=-3cm]client.south);
+
+  % Step 3: WebSocket frames
+  \draw[arrow, color=codeGreen] ([yshift=-4.8cm]client.south) -- node[above, label, color=codeGreen] {WebSocket Frame (JSON istek)} ([yshift=-4.8cm]server.south);
+
+  \draw[arrow, color=codeYellow] ([yshift=-5.8cm]server.south) -- node[above, label, color=codeYellow] {WebSocket Frame (progress)} ([yshift=-5.8cm]client.south);
+
+  \draw[arrow, color=codeYellow] ([yshift=-6.8cm]server.south) -- node[above, label, color=codeYellow] {WebSocket Frame (keepalive)} ([yshift=-6.8cm]client.south);
+
+  \draw[arrow, color=codeGreen] ([yshift=-7.8cm]server.south) -- node[above, label, color=codeGreen] {WebSocket Frame (result)} ([yshift=-7.8cm]client.south);
+
+  % Step 4: Close
+  \draw[arrow, color=codeRed] ([yshift=-9cm]client.south) -- node[above, label, color=codeRed] {Close Frame (0x8)} ([yshift=-9cm]server.south);
+
+  % Phase labels
+  \node[label, left=0.3cm] at ([yshift=-2cm]client.south) {\textbf{Handshake}};
+  \node[label, left=0.3cm] at ([yshift=-6cm]client.south) {\textbf{Veri Ak{\i}\c{s}{\i}}};
+  \node[label, left=0.3cm] at ([yshift=-9cm]client.south) {\textbf{Kapan{\i}\c{s}}};
+\end{tikzpicture}
+\caption{WebSocket handshake ve ya\c{s}am d\"{o}ng\"{u}s\"{u}}
+\label{fig:ws-handshake}
+\end{figure}
+
+\.{I}stemcinin g\"{o}nderdi\u{g}i Upgrade iste\u{g}i:
+
+\begin{lstlisting}
+GET /research_ws HTTP/1.1
+Host: localhost:8001
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+\end{lstlisting}
+
+Sunucunun yan{\i}t{\i}:
+
+\begin{lstlisting}
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+\end{lstlisting}
+
+
+\subsection{Sec-WebSocket-Accept Hesaplama Algoritmas{\i}}
+\label{sec:ws-accept}
+
+RFC~6455 Section~4.2.2'ye g\"{o}re kabul anahtar{\i}n{\i}n hesaplanmas{\i}:
+
+\begin{equation}
+\label{eq:ws-accept}
+\texttt{Sec-WebSocket-Accept} = \mathrm{Base64}\bigl(\mathrm{SHA\text{-}1}(\texttt{Key} \;\|\; \texttt{GUID})\bigr)
+\end{equation}
+
+Burada \texttt{GUID} = \texttt{"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"} sabiti RFC~6455'te tan{\i}ml{\i}d{\i}r. Amac{\i}: sunucunun ger\c{c}ekten WebSocket protokol\"{u}n\"{u} anlad{\i}\u{g}{\i}n{\i} do\u{g}rulamak.
+
+\begin{ornek}
+Somut hesaplama:
+\begin{enumerate}
+  \item Birle\c{s}tir: \texttt{input = "dGhlIHNhbXBsZSBub25jZQ==" + GUID}
+  \item SHA-1 hash: \texttt{0xb3 0x7a 0x4f 0x2c 0xc0 0x62 \ldots}
+  \item Base64 encode: \texttt{"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="}
+\end{enumerate}
+\end{ornek}
+
+
+\subsection{WebSocket Frame Format{\i}}
+\label{sec:ws-frame}
+
+RFC~6455'in tan{\i}mlad{\i}\u{g}{\i} ikili (binary) frame yap{\i}s{\i}:
+
+\begin{lstlisting}
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-------+-+-------------+-------------------------------+
+|F|R|R|R| opcode|M| Payload len |   Extended payload length     |
+|I|S|S|S|  (4)  |A|     (7)     |          (16/64)              |
+|N|V|V|V|       |S|             |  (if payload len==126/127)    |
+| |1|2|3|       |K|             |                               |
++-+-+-+-+-------+-+-------------+-------------------------------+
+|                               |Masking-key, if MASK set to 1  |
++-------------------------------+-------------------------------+
+| Masking-key (continued)       |         Payload Data          |
++-------------------------------+-------------------------------+
+\end{lstlisting}
+
+\textbf{Opcode de\u{g}erleri:}
+\begin{itemize}
+  \item \texttt{0x0}: Continuation frame
+  \item \texttt{0x1}: Text frame (LocoDex'te JSON mesajlar{\i} i\c{c}in)
+  \item \texttt{0x2}: Binary frame
+  \item \texttt{0x8}: Connection close
+  \item \texttt{0x9}: Ping
+  \item \texttt{0xA}: Pong
+\end{itemize}
+
+\subsection{Maskeleme Algoritmas{\i} (XOR)}
+\label{sec:ws-masking}
+
+Client $\to$ server y\"{o}n\"{u}ndeki t\"{u}m frame'ler maskelenir:
+
+\begin{equation}
+\label{eq:masking}
+\texttt{transformed\_data}[i] = \texttt{original\_data}[i] \oplus \texttt{masking\_key}[i \bmod 4]
+\end{equation}
+
+Burada $\texttt{masking\_key} = [K_0, K_1, K_2, K_3]$ (4~byte rastgele) ve $\oplus$ XOR i\c{s}lemini temsil eder.
+
+\begin{dikkat}
+Maskeleme neden gereklidir? Cache poisoning sald{\i}r{\i}lar{\i}na kar\c{s}{\i} koruma sa\u{g}lar. Aradaki proxy'lerin WebSocket verisini HTTP verisi olarak yorumlamamas{\i} i\c{c}in zorunludur.
+\end{dikkat}
+
+\begin{ornek}
+LocoDex'te tipik bir progress mesaj{\i}:
+\begin{lstlisting}
+{"type": "progress", "step": 0.15,
+ "message": "Arastirma stratejisi belirleniyor..."}
+\end{lstlisting}
+Bu mesaj $\sim$75~byte. Frame overhead: FIN=1, Opcode=\texttt{0x1} (1~byte), MASK=1, Length=75 (1~byte), Masking key (4~byte), Payload (75~byte). \textbf{Toplam: 81~byte} (payload'{\i}n \%8'i overhead).
+\end{ornek}
+
+
+% ============================================================
+\section{Full-Duplex \.{I}leti\c{s}im: TCP Soket Teorisi}
+\label{sec:full-duplex}
+
+\subsection{TCP Full-Duplex Temeli}
+\label{sec:tcp-fullduplex}
+
+TCP (RFC~793) do\u{g}as{\i} gere\u{g}i full-duplex'tir. Her TCP ba\u{g}lant{\i}s{\i} iki ba\u{g}{\i}ms{\i}z byte ak{\i}\c{s}{\i} (stream) i\c{c}erir:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum width=2.5cm, minimum height=1cm, rounded corners=3pt,
+    font=\small\bfseries},
+  buf/.style={rectangle, draw=boxBorder, fill=codeBG, text=textWhite,
+    minimum width=2cm, minimum height=0.6cm, font=\tiny},
+  arrow/.style={->, >=stealth, thick}
+]
+  \node[box] (client) {Client};
+  \node[box, right=7cm of client] (server) {Server};
+
+  % Send/Receive buffers
+  \node[buf, above right=0.3cm and 1.5cm of client] (cs) {Send Buffer};
+  \node[buf, below right=0.3cm and 1.5cm of client] (cr) {Recv Buffer};
+
+  \node[buf, above left=0.3cm and 1.5cm of server] (sr) {Recv Buffer};
+  \node[buf, below left=0.3cm and 1.5cm of server] (ss) {Send Buffer};
+
+  % Arrows
+  \draw[arrow, color=codeGreen] (cs.east) -- node[above, font=\tiny, color=codeGreen] {SEQ$_c$, ACK$_c$} (sr.west);
+  \draw[arrow, color=codeYellow] (ss.west) -- node[below, font=\tiny, color=codeYellow] {SEQ$_s$, ACK$_s$} (cr.east);
+
+  % Labels
+  \draw[arrow, color=sectionBlue!50, dashed] (client.east) -- (cs.west);
+  \draw[arrow, color=sectionBlue!50, dashed] (cr.west) -- (client.east);
+  \draw[arrow, color=sectionBlue!50, dashed] (server.west) -- (ss.east);
+  \draw[arrow, color=sectionBlue!50, dashed] (sr.east) -- (server.west);
+\end{tikzpicture}
+\caption{TCP full-duplex ba\u{g}lant{\i} yap{\i}s{\i}}
+\label{fig:tcp-fullduplex}
+\end{figure}
+
+Her y\"{o}n i\c{c}in ayr{\i} sequence numaralar{\i} tutulur. WebSocket bu TCP full-duplex \"{o}zelli\u{g}ini, HTTP'nin yar{\i}-duplex k{\i}s{\i}tlamas{\i}ndan kurtararak do\u{g}rudan kullan{\i}r.
+
+\subsection{Nagle Algoritmas{\i} ve TCP\_NODELAY}
+\label{sec:nagle}
+
+Nagle algoritmas{\i} (RFC~896) k\"{u}\c{c}\"{u}k TCP segmentlerini birle\c{s}tirerek a\u{g} verimlili\u{g}ini art{\i}r{\i}r:
+
+\begin{algorithm}[H]
+\caption{Nagle Algoritmas{\i}}
+\label{alg:nagle}
+\begin{algorithmic}[1]
+\If{unacknowledged\_data\_in\_flight}
+  \State buffer\_new\_data() \Comment{Bekle, biriktir}
+  \If{buffer $\geq$ MSS \textbf{or} ACK\_received}
+    \State send(buffer) \Comment{Tampon dolu veya ACK geldi}
+  \EndIf
+\Else
+  \State send(data) \Comment{Bo\c{s} hat, hemen g\"{o}nder}
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+MSS (Maximum Segment Size): $\text{MTU} - \text{IP header} - \text{TCP header} = 1500 - 20 - 20 = 1460$~byte.
+
+\begin{dikkat}
+LocoDex'teki progress mesajlar{\i} (50--100~byte) MSS'ten \c{c}ok k\"{u}\c{c}\"{u}kt\"{u}r. Nagle algoritmas{\i} bu mesajlar{\i} tamponlayabilir ve UI'da gecikme yaratabilir. \c{C}\"{o}z\"{u}m: \texttt{TCP\_NODELAY} opsiyonu. uvicorn ve asyncio altyap{\i}s{\i} varsay{\i}lan olarak \texttt{TCP\_NODELAY} kullan{\i}r.
+
+\textbf{Trade-off:}
+\begin{itemize}
+  \item \texttt{TCP\_NODELAY = True}: D\"{u}\c{s}\"{u}k gecikme, \%3--5 daha fazla bant geni\c{s}li\u{g}i kullan{\i}m{\i}
+  \item \texttt{TCP\_NODELAY = False}: Y\"{u}ksek verimlilik, k\"{u}\c{c}\"{u}k mesajlarda gecikme
+\end{itemize}
+\end{dikkat}
+
+
+% ============================================================
+\section{Keepalive Mekanizmas{\i}}
+\label{sec:keepalive}
+
+\subsection{Neden 30 Saniye?}
+\label{sec:keepalive-why30}
+
+\begin{kodref}{server.py --- Keepalive G\"{o}revi}
+\begin{lstlisting}
+async def keepalive_task():
+    while True:
+        await asyncio.sleep(30)  # Her 30 saniyede bir
+        await websocket.send_json({"type": "keepalive"})
+\end{lstlisting}
+\end{kodref}
+
+Bu 30 saniye de\u{g}eri \"{u}\c{c} katmanl{\i} analizle belirlenir:
+
+\subsubsection{Katman~1: TCP Keepalive}
+Linux varsay{\i}lan TCP keepalive de\u{g}erleri:
+\begin{align}
+\texttt{tcp\_keepalive\_time}   &= 7200\;\text{s} \quad \text{(2 saat)} \\
+\texttt{tcp\_keepalive\_intvl}  &= 75\;\text{s} \\
+\texttt{tcp\_keepalive\_probes} &= 9
+\end{align}
+Toplam tespit s\"{u}resi: $7200 + 9 \times 75 = 7875$~s $\approx$ 2~saat~11~dakika. LocoDex i\c{c}in kabul edilemez.
+
+\subsubsection{Katman~2: NAT/Firewall Timeout}
+\begin{itemize}
+  \item Tipik NAT timeout: 60--300~s
+  \item AWS ALB varsay{\i}lan: 60~s
+  \item Nginx \texttt{proxy\_timeout}: 60~s
+  \item Docker bridge: s{\i}n{\i}rs{\i}z (lokal)
+\end{itemize}
+$30\;\text{s} < 60\;\text{s}$: En k\"{o}t\"{u} senaryodaki NAT timeout'undan k\"{u}\c{c}\"{u}k. Ba\u{g}lant{\i}y{\i} canl{\i} tutar.
+
+\subsubsection{Katman~3: Kullan{\i}c{\i} Deneyimi}
+Ara\c{s}t{\i}rma s\"{u}reci 2--10 dakika s\"{u}rebilir. 30~saniye, ``sistem hala \c{c}al{\i}\c{s}{\i}yor'' mesaj{\i} i\c{c}in uygun aral{\i}kt{\i}r.
+
+\subsection{TCP Keepalive ve Application-Level Keepalive Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{sec:keepalive-comparison}
+
+\begin{table}[H]
+\centering
+\caption{Keepalive mekanizmalar{\i}n{\i}n kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:keepalive}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\color{chapterBlue}\textbf{\"{O}zellik} & \color{chapterBlue}\textbf{TCP Keepalive} & \color{chapterBlue}\textbf{Application-Level (LocoDex)} \\
+\midrule
+Katman            & Transport (L4) & Application (L7) \\
+Varsay{\i}lan Aral{\i}k & 7200~s         & 30~s \\
+Tespit S\"{u}resi     & $\sim$2~saat      & $\sim$30--60~s \\
+NAT Traversal     & Yetersiz       & Yeterli \\
+Proxy Deste\u{g}i     & Proxy g\"{o}remez  & Proxy JSON'u iletir \\
+Overhead          & 40~byte (TCP header) & $\sim$30~byte (WS frame + JSON) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Keepalive Bant Geni\c{s}li\u{g}i Maliyeti}
+\label{sec:keepalive-cost}
+
+10 dakikal{\i}k bir ara\c{s}t{\i}rma oturumunda:
+\begin{equation}
+\label{eq:keepalive-count}
+N_{\mathrm{keepalive}} = \frac{10 \times 60}{30} = 20 \;\text{mesaj}
+\end{equation}
+
+\begin{equation}
+\label{eq:keepalive-cost}
+\text{Toplam keepalive trafi\u{g}i} = 20 \times 28 = 560 \;\text{byte}
+\end{equation}
+
+Ara\c{s}t{\i}rma raporunun boyutu $\sim$5\,000--50\,000~byte oldu\u{g}unda keepalive oran{\i} \%1.1--\%11 aras{\i}d{\i}r. \textbf{\.{I}hmal edilebilir overhead.}
+
+
+% ============================================================
+\section{Async/Await Concurrency Modeli}
+\label{sec:async-await}
+
+\subsection{Event Loop Temeli}
+\label{sec:event-loop}
+
+Python asyncio event loop'u tek thread \"{u}zerinde \textit{cooperative multitasking} yapar:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  scale=0.85, transform shape,
+  task/.style={rectangle, draw=boxBorder, fill=#1, text=textWhite,
+    minimum height=0.5cm, rounded corners=1pt, font=\tiny},
+  arrow/.style={->, >=stealth, thin, color=boxBorder}
+]
+  % Timeline
+  \draw[thick, color=boxBorder, ->] (0,0) -- (15,0) node[right, font=\small, color=textWhite] {$t$ (ms)};
+
+  % Task labels
+  \node[font=\small, color=codeGreen, anchor=east] at (-0.2, 2.5) {G\"{o}rev 1};
+  \node[font=\small, color=codeYellow, anchor=east] at (-0.2, 1.5) {G\"{o}rev 2};
+  \node[font=\small, color=codePurple, anchor=east] at (-0.2, 0.5) {G\"{o}rev 3};
+
+  % Task 1: runs, yields (await IO), runs, yields
+  \node[task=codeGreen!70!black, minimum width=2cm] at (1, 2.5) {CPU};
+  \node[task=codeGreen!20!black, minimum width=3cm] at (4, 2.5) {\textit{await IO}};
+  \node[task=codeGreen!70!black, minimum width=1.5cm] at (6.75, 2.5) {CPU};
+  \node[task=codeGreen!20!black, minimum width=2cm] at (9, 2.5) {\textit{await IO}};
+  \node[task=codeGreen!70!black, minimum width=2cm] at (12, 2.5) {CPU};
+
+  % Task 2: waits, runs, yields, runs
+  \node[task=codeYellow!20!black, minimum width=2cm] at (1, 1.5) {\textit{bekle}};
+  \node[task=codeYellow!70!black, minimum width=2.5cm] at (3.75, 1.5) {CPU};
+  \node[task=codeYellow!20!black, minimum width=3cm] at (7, 1.5) {\textit{await IO}};
+  \node[task=codeYellow!70!black, minimum width=2.5cm] at (10, 1.5) {CPU};
+
+  % Task 3: waits, runs
+  \node[task=codePurple!20!black, minimum width=6cm] at (3.5, 0.5) {\textit{bekle}};
+  \node[task=codePurple!70!black, minimum width=2.5cm] at (8, 0.5) {CPU};
+  \node[task=codePurple!20!black, minimum width=3cm] at (12, 0.5) {\textit{await IO}};
+
+  % Yield points
+  \foreach \x in {2, 5.5, 7.5, 9.25, 11, 13} {
+    \draw[dashed, color=sectionBlue!30] (\x, -0.2) -- (\x, 3.2);
+  }
+
+  \node[font=\tiny, color=sectionBlue!60] at (7.5, 3.5) {Cooperative: g\"{o}rev kendisi YIELD eder};
+\end{tikzpicture}
+\caption{Cooperative multitasking: event loop zaman \c{c}izelgesi}
+\label{fig:event-loop}
+\end{figure}
+
+\begin{formulbox}[Cooperative vs Preemptive Multitasking]
+\textbf{Cooperative (asyncio):} Context switch maliyeti $\approx 0$ (sadece Python stack frame de\u{g}i\c{s}imi). Dezavantaj{\i}: CPU-bound g\"{o}rev t\"{u}m loop'u bloklar.
+
+\textbf{Preemptive (threading):} \.{I}\c{s}letim sistemi g\"{o}revleri keser. Context switch maliyeti $\sim$1--10~$\mu$s. CPU-bound g\"{o}revler otomatik payla\c{s}t{\i}r{\i}l{\i}r.
+\end{formulbox}
+
+\subsection{Coroutine Scheduling --- LocoDex \"{O}rne\u{g}i}
+\label{sec:coroutine-scheduling}
+
+\begin{kodref}{server.py --- WebSocket Handler}
+\begin{lstlisting}
+@app.websocket("/research_ws")
+async def research_websocket(websocket: WebSocket):
+    await websocket.accept()
+    keepalive = asyncio.create_task(keepalive_task())
+    # ...
+    answer = await researcher.run_research(topic)
+\end{lstlisting}
+\end{kodref}
+
+Burada \"{u}\c{c} coroutine paralel \c{c}al{\i}\c{s}{\i}r:
+\begin{enumerate}
+  \item \texttt{research\_websocket} --- ana i\c{s}leyici
+  \item \texttt{keepalive\_task} --- 30 saniyede bir ping
+  \item \texttt{run\_research} (i\c{c}inde \texttt{call\_local\_model}, \texttt{search\_web\_advanced} vb.)
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{Coroutine zamanlama \"{o}rne\u{g}i (tek ara\c{s}t{\i}rma oturumu)}
+\label{tab:scheduling}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{rXl}
+\toprule
+\color{chapterBlue}\textbf{$t$ (ms)} & \color{chapterBlue}\textbf{\.{I}\c{s}lem} & \color{chapterBlue}\textbf{Durum} \\
+\midrule
+0        & \texttt{research\_websocket} ba\c{s}lat       & \texttt{\_ready} \\
+1        & \texttt{websocket.accept()} $\to$ IO bekle  & YIELD \\
+2        & accept tamamland{\i}                         & \texttt{\_ready} \\
+3        & \texttt{create\_task(keepalive\_task)}       & \texttt{\_ready} \\
+4        & \texttt{receive\_text()} $\to$ IO bekle      & YIELD \\
+100      & Veri geldi, \texttt{receive\_text} tamamland{\i} & \texttt{\_ready} \\
+101      & \texttt{run\_research()} ba\c{s}lat              & \texttt{\_ready} \\
+102      & \texttt{call\_local\_model()} $\to$ aiohttp POST & YIELD \\
+30\,000  & keepalive: sleep bitti $\to$ \texttt{send\_json} & YIELD \\
+35\,000  & aiohttp yan{\i}t geldi                          & \texttt{\_ready} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{asyncio.wait\_for Mekanizmas{\i}}
+\label{sec:wait-for}
+
+\begin{kodref}{server.py --- Timeout ile Mesaj Bekleme}
+\begin{lstlisting}
+data = await asyncio.wait_for(
+    websocket.receive_text(), timeout=300
+)
+\end{lstlisting}
+\end{kodref}
+
+\texttt{asyncio.wait\_for} \"{u}\c{c} eylem ger\c{c}ekle\c{s}tirir:
+\begin{enumerate}
+  \item Coroutine'i Task olarak sarar
+  \item Bir timer ba\c{s}lat{\i}r (300~saniye)
+  \item Timer dolunca \texttt{asyncio.TimeoutError} f{\i}rlat{\i}r
+\end{enumerate}
+
+\begin{lstlisting}[caption={wait\_for dahili implementasyonu (pseudo-code)},label={lst:wait-for}]
+async def wait_for(coro, timeout):
+    task = create_task(coro)
+    timer = call_later(timeout, task.cancel)
+    try:
+        return await task
+    except CancelledError:
+        raise TimeoutError
+    finally:
+        timer.cancel()
+\end{lstlisting}
+
+\subsection{Event Loop Hesaplama Karma\c{s}{\i}kl{\i}\u{g}{\i}}
+\label{sec:event-loop-complexity}
+
+Event loop'un tek iterasyonunun karma\c{s}{\i}kl{\i}\u{g}{\i}:
+
+\begin{equation}
+\label{eq:event-loop-complexity}
+T_{\mathrm{iteration}} = O(k + \log n)
+\end{equation}
+
+Burada $k =$ haz{\i}r event say{\i}s{\i} ve $n =$ aktif timer say{\i}s{\i}. Bile\c{s}enleri:
+
+\begin{itemize}
+  \item \texttt{epoll\_wait} syscall: $O(1)$ amortized (red-black tree)
+  \item Haz{\i}r event'leri i\c{s}leme: $O(k)$
+  \item Timer heap'ten kontrol: $O(\log n)$
+\end{itemize}
+
+\begin{ornek}
+LocoDex'te 10 e\c{s} zamanl{\i} ara\c{s}t{\i}rma oturumu:
+\begin{align*}
+\text{Entity say{\i}s{\i}} &= 10 \;\text{WS soket} + 10 \;\text{keepalive timer} + 50\text{--}100 \;\text{aiohttp soket} \approx 120 \\
+\text{epoll/iteration} &= O(1) \;\text{amortized} \\
+\text{Timer heap} &= O(\log 10) \approx 3.3 \;\text{kar\c{s}{\i}la\c{s}t{\i}rma} \\
+\text{Toplam/iteration} &< 10 \;\mu\text{s}
+\end{align*}
+Sonu\c{c}: Tek thread, tek event loop ile 10 e\c{s} zamanl{\i} oturum rahatl{\i}kla y\"{o}netilebilir.
+\end{ornek}
+
+
+% ============================================================
+\section{uvicorn ASGI Sunucusu}
+\label{sec:uvicorn}
+
+\subsection{ASGI Protokol\"{u}}
+\label{sec:asgi}
+
+ASGI (Asynchronous Server Gateway Interface), WSGI'nin asenkron versiyonudur:
+
+\begin{lstlisting}[caption={WSGI ve ASGI aray\"{u}z kar\c{s}{\i}la\c{s}t{\i}rmas{\i}},label={lst:wsgi-asgi}]
+# WSGI (senkron):
+def application(environ, start_response):
+    # Her istek bir thread/process'te
+
+# ASGI (asenkron):
+async def application(scope, receive, send):
+    # Her istek bir coroutine'de
+\end{lstlisting}
+
+ASGI scope tipleri: \texttt{http} (HTTP istekleri), \texttt{websocket} (WebSocket ba\u{g}lant{\i}lar{\i}), \texttt{lifespan} (uygulama ya\c{s}am d\"{o}ng\"{u}s\"{u}).
+
+\subsection{Worker Modeli}
+\label{sec:worker-model}
+
+\begin{kodref}{Dockerfile --- uvicorn Ba\c{s}latma Komutu}
+\begin{lstlisting}
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0",
+     "--port", "8001", "--reload", "--log-level", "debug"]
+\end{lstlisting}
+\end{kodref}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  proc/.style={rectangle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum width=3cm, minimum height=0.7cm, rounded corners=2pt, font=\small},
+  coro/.style={rectangle, draw=codeGreen!50, fill=codeBG, text=codeGreen,
+    minimum width=2.5cm, minimum height=0.5cm, rounded corners=1pt, font=\scriptsize},
+  arrow/.style={->, >=stealth, thick, color=chapterBlue}
+]
+  % Single worker mode
+  \node[proc, fill=chapterBlue!30!black] (uv) {\textbf{uvicorn process}};
+  \node[proc, below=0.5cm of uv] (loop) {asyncio event loop};
+  \node[coro, below left=0.6cm and -0.3cm of loop] (c1) {WS \#1 coroutine};
+  \node[coro, below=0.6cm of loop] (c2) {WS \#2 coroutine};
+  \node[coro, below right=0.6cm and -0.3cm of loop] (cn) {WS \#N coroutine};
+
+  \draw[arrow] (uv) -- (loop);
+  \draw[arrow] (loop) -- (c1);
+  \draw[arrow] (loop) -- (c2);
+  \draw[arrow] (loop) -- (cn);
+
+  \node[font=\scriptsize, color=sectionBlue, below=0.3cm of c2] {Tek worker modu (LocoDex)};
+\end{tikzpicture}
+\caption{uvicorn tek worker modu --- t\"{u}m WebSocket ba\u{g}lant{\i}lar{\i} ayn{\i} event loop'ta}
+\label{fig:uvicorn-single}
+\end{figure}
+
+\textbf{Neden tek worker?}
+\begin{enumerate}
+  \item T\"{u}m i\c{s}lemler IO-bound $\to$ asyncio tek thread'de halleder
+  \item WebSocket ba\u{g}lant{\i}lar{\i} ayn{\i} process'te olmal{\i} (shared state)
+  \item Docker container i\c{c}inde kaynak s{\i}n{\i}rl{\i}
+\end{enumerate}
+
+\subsection{uvloop: libuv Tabanl{\i} Event Loop}
+\label{sec:uvloop}
+
+uvicorn, \texttt{uvloop} kullanabilir (libuv'un Python binding'i):
+
+\begin{equation}
+\label{eq:uvloop-speedup}
+\frac{\text{uvloop throughput}}{\text{asyncio throughput}} \approx 3.5\times
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Event loop performans kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:uvloop}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{0.8\textwidth}{Xrr}
+\toprule
+\color{chapterBlue}\textbf{Event Loop} & \color{chapterBlue}\textbf{Throughput (req/s)} & \color{chapterBlue}\textbf{H{\i}zlanma} \\
+\midrule
+asyncio (pure Python) & $\sim$20\,000 & 1.0$\times$ \\
+uvloop (libuv/C)      & $\sim$70\,000 & 3.5$\times$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+LocoDex'te \texttt{uvicorn[standard]} paketi (\texttt{requirements.txt}) uvloop'u i\c{c}erir.
+
+
+% ============================================================
+%  KISIM 2: MICROSERVICE TASARIM DESENLERI
+% ============================================================
+
+\section{Monolitik ve Microservice Mimarileri}
+\label{sec:monolith-vs-micro}
+
+\subsection{CAP Teoremi (Brewer, 2000)}
+\label{sec:cap}
+
+Eric Brewer'{\i}n CAP teoremi, da\u{g}{\i}t{\i}k bir sistemde a\c{s}a\u{g}{\i}daki \"{u}\c{c} \"{o}zellikten en fazla ikisinin ayn{\i} anda garanti edilebilece\u{g}ini belirtir:
+
+\begin{tanim}[CAP Teoremi]
+\label{def:cap}
+Bir da\u{g}{\i}t{\i}k sistem $S = \{n_1, n_2, \ldots, n_N\}$ i\c{c}in:
+\begin{align}
+\text{C (Consistency):}       &\quad \forall\, R(x):\; R(x) = W_{\mathrm{son}}(x) \label{eq:cap-c} \\
+\text{A (Availability):}      &\quad \forall\, I:\; P(\text{yan{\i}t}(I) \neq \text{hata}) = 1 \label{eq:cap-a} \\
+\text{P (Partition tolerance):}&\quad \forall\, n_a \in S_i, n_b \in S_j:\; \text{mesaj}(n_a, n_b) = \text{kay{\i}p} \nonumber \\
+                               &\quad \Rightarrow \text{Sistem \c{c}al{\i}\c{s}maya devam eder} \label{eq:cap-p}
+\end{align}
+Bu \"{u}\c{c} \"{o}zellik ayn{\i} anda sa\u{g}lanamaz.
+\end{tanim}
+
+\textbf{\.{I}mkans{\i}zl{\i}k sezgisi:} A\u{g} b\"{o}l\"{u}nmesi olu\c{s}tu\u{g}unda (P ka\c{c}{\i}n{\i}lmaz): C se\c{c}ersek yazma t\"{u}m d\"{u}\u{g}\"{u}mlere yay{\i}lmadan yan{\i}t veremeyiz (A k{\i}r{\i}l{\i}r); A se\c{c}ersek b\"{o}l\"{u}nmenin \"{o}b\"{u}r taraf{\i}ndaki d\"{u}\u{g}\"{u}mler eski veri d\"{o}nd\"{u}r\"{u}r (C k{\i}r{\i}l{\i}r).
+
+\subsection{LocoDex Mimari Yap{\i}s{\i}}
+\label{sec:locodex-arch}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1cm,
+  comp/.style={rectangle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum width=4cm, minimum height=0.9cm, rounded corners=3pt,
+    font=\small},
+  ext/.style={rectangle, draw=warnOrange!50, fill=pageBG!85!warnOrange, text=textWhite,
+    minimum width=3.5cm, minimum height=0.9cm, rounded corners=3pt,
+    font=\small},
+  container/.style={rectangle, draw=chapterBlue!50, fill=pageBG!92!chapterBlue,
+    rounded corners=5pt, inner sep=10pt},
+  arrow/.style={->, >=stealth, thick, color=chapterBlue},
+  label/.style={font=\scriptsize, color=sectionBlue}
+]
+  % Browser
+  \node[ext] (browser) {Kullan{\i}c{\i} Taray{\i}c{\i}s{\i}};
+
+  % Docker container
+  \node[comp, below=1.5cm of browser] (server) {\textbf{server.py} (FastAPI + WS)};
+  \node[comp, below=0.5cm of server] (smart) {SmartMultilingualResearcher};
+  \node[comp, below=0.5cm of smart] (real) {RealDeepResearcher};
+  \node[comp, below=0.5cm of real] (local) {LocalDeepResearcher};
+
+  \begin{scope}[on background layer]
+    \node[container, fit=(server)(smart)(real)(local), label={[color=chapterBlue, font=\small\bfseries]above:Docker Container}] (docker) {};
+  \end{scope}
+
+  % External services
+  \node[ext, right=2.5cm of smart] (ollama) {Ollama / LM Studio};
+  \node[ext, right=2.5cm of real] (google) {Google / DuckDuckGo};
+
+  % Arrows
+  \draw[arrow] (browser) -- node[right, label] {WebSocket (ws://)} (server);
+  \draw[arrow] (smart) -- node[above, label] {HTTP} (ollama);
+  \draw[arrow] (real) -- node[above, label] {HTTPS} (google);
+  \draw[arrow, dashed, color=boxBorder] (server) -- (smart);
+  \draw[arrow, dashed, color=boxBorder] (smart) -- (real);
+  \draw[arrow, dashed, color=boxBorder] (real) -- (local);
+\end{tikzpicture}
+\caption{LocoDex sistem topolojisi --- modular monolith}
+\label{fig:system-topology}
+\end{figure}
+
+Bu yap{\i} \textbf{modular monolith} olarak s{\i}n{\i}fland{\i}r{\i}l{\i}r:
+\begin{itemize}
+  \item Tek Docker container (tek deploy birimi)
+  \item Dahili mod\"{u}llere ayr{\i}lm{\i}\c{s} (Smart, Real, Local researcher)
+  \item Tek state (ara\c{s}t{\i}rma sonu\c{c}lar{\i} dosya sisteminde)
+\end{itemize}
+
+\subsection{Modular Monolith ve Full Microservice Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{sec:monolith-tradeoff}
+
+\begin{table}[H]
+\centering
+\caption{Mimari yakla\c{s}{\i}mlar{\i}n trade-off analizi}
+\label{tab:monolith-micro}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\color{chapterBlue}\textbf{Kriter} & \color{chapterBlue}\textbf{Modular Monolith (LocoDex)} & \color{chapterBlue}\textbf{Full Microservice} \\
+\midrule
+Deploy karma\c{s}{\i}kl{\i}\u{g}{\i} & $O(1)$ --- tek container      & $O(K)$ --- $K$ container \\
+A\u{g} gecikmesi         & 0 (process i\c{c}i \c{c}a\u{g}r{\i})     & $K \times \text{RTT}$ \\
+Hata y\"{o}netimi          & \texttt{try/except}             & Circuit breaker + retry + DLQ \\
+Geli\c{s}tirme h{\i}z{\i}       & H{\i}zl{\i} --- tek codebase        & Yava\c{s} --- $K$ codebase \\
+\"{O}l\c{c}ekleme             & Dikey (daha b\"{u}y\"{u}k container) & Yatay (daha fazla instance) \\
+Bellek kullan{\i}m{\i}      & $\sim$100~MB                    & $K \times \sim$100~MB \\
+Tutarl{\i}l{\i}k            & Strong (ayn{\i} process)         & Eventual (da\u{g}{\i}t{\i}k) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{equation}
+\label{eq:monolith-vs-micro}
+\frac{T_{\mathrm{microservice}}}{T_{\mathrm{monolith}}} = \frac{T_{\mathrm{serialize}} + \text{RTT} + T_{\mathrm{deserialize}}}{T_{\mathrm{function\_call}}} \approx \frac{500\,000\;\text{ns}}{100\;\text{ns}} = 5000\times
+\end{equation}
+
+
+% ============================================================
+\section{Docker Containerization}
+\label{sec:docker}
+
+\subsection{Linux Namespace \.{I}zolasyonu}
+\label{sec:namespaces}
+
+Docker, Linux kernel namespace'lerini kullanarak izolasyon sa\u{g}lar:
+
+\begin{table}[H]
+\centering
+\caption{Linux namespace tipleri ve LocoDex'teki etkileri}
+\label{tab:namespaces}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\color{chapterBlue}\textbf{Namespace} & \color{chapterBlue}\textbf{\.{I}zolasyon} & \color{chapterBlue}\textbf{LocoDex Etkisi} \\
+\midrule
+PID    & Process ID          & \texttt{uvicorn} PID~1 olarak g\"{o}r\"{u}n\"{u}r \\
+NET    & Network stack       & Sadece port~8001 d{\i}\c{s}ar{\i}ya a\c{c}{\i}k \\
+MNT    & Filesystem mount    & \texttt{/app} dizini host'tan izole \\
+UTS    & Hostname            & Container kendi hostname'ine sahip \\
+IPC    & Inter-process comm. & Shared memory izole \\
+USER   & User/group ID       & Kullan{\i}c{\i} ID e\c{s}lemesi \\
+CGROUP & Cgroup g\"{o}r\"{u}n\"{u}rl\"{u}k  & Kaynak limitleri \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{kodref}{Dockerfile --- Host'a Eri\c{s}im}
+\begin{lstlisting}
+# real_deep_research.py
+host_ip = os.environ.get('OLLAMA_HOST_IP') or \
+    socket.gethostbyname('host.docker.internal')
+\end{lstlisting}
+\texttt{host.docker.internal} Docker Desktop'un sundu\u{g}u \"{o}zel DNS kayd{\i}d{\i}r.
+Container DNS sorgusu: \texttt{host.docker.internal} $\to$ \texttt{192.168.65.2} (macOS) veya \texttt{172.17.0.1} (Linux).
+\end{kodref}
+
+\subsection{Katmanl{\i} Dosya Sistemi (OverlayFS)}
+\label{sec:overlayfs}
+
+Dockerfile'daki her komut bir katman olu\c{s}turur:
+
+\begin{table}[H]
+\centering
+\caption{Docker image katmanlar{\i} ve build cache}
+\label{tab:layers}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{clrX}
+\toprule
+\color{chapterBlue}\textbf{Katman} & \color{chapterBlue}\textbf{Komut} & \color{chapterBlue}\textbf{Boyut} & \color{chapterBlue}\textbf{Cache} \\
+\midrule
+1 & \texttt{FROM python:3.11-slim}     & $\sim$120~MB  & De\u{g}i\c{s}mez \\
+2 & \texttt{COPY requirements.txt .}   & $\sim$1~KB    & requirements de\u{g}i\c{s}irse \\
+3 & \texttt{RUN pip install ...}       & $\sim$200~MB  & requirements de\u{g}i\c{s}irse \\
+4 & \texttt{COPY . .}                  & $\sim$100~KB  & Her kod de\u{g}i\c{s}ikli\u{g}inde \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{equation}
+\label{eq:cache-saving}
+\text{Tasarruf} = 1 - \frac{\text{Katman 4 (100\,KB)}}{\text{Toplam (320\,MB)}} = 1 - 0.0003 = \%99.97
+\end{equation}
+
+
+% ============================================================
+\section{Service Discovery ve Health Check}
+\label{sec:service-discovery}
+
+\subsection{LocoDex'teki Fallback Chain Yap{\i}s{\i}}
+\label{sec:fallback-chain}
+
+LocoDex \"{u}\c{c} seviyede health check uygular:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=0.6cm,
+  hc/.style={rectangle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum width=5cm, minimum height=0.7cm, rounded corners=2pt,
+    font=\small},
+  ok/.style={->, >=stealth, thick, color=codeGreen},
+  fail/.style={->, >=stealth, thick, color=codeRed},
+  label/.style={font=\scriptsize}
+]
+  % Level 1
+  \node[hc] (l1) {\textbf{Seviye~1:} Ba\c{s}lang{\i}\c{c} (llms.py, timeout=2s)};
+  \node[hc, right=2.5cm of l1] (l1a) {Ollama};
+  \node[hc, below=0.3cm of l1a] (l1b) {LM Studio};
+  \draw[ok] (l1) -- node[above, label, color=codeGreen] {OK} (l1a);
+  \draw[fail] (l1a.south) -- node[right, label, color=codeRed] {FAIL} (l1b);
+
+  % Level 2
+  \node[hc, below=1.2cm of l1] (l2) {\textbf{Seviye~2:} \.{I}\c{s}lem S{\i}ras{\i} (timeout=300s)};
+  \node[hc, right=2.5cm of l2] (l2a) {Model \c{c}a\u{g}r{\i}s{\i}};
+  \node[hc, below=0.3cm of l2a] (l2b) {Fallback model};
+  \draw[ok] (l2) -- node[above, label, color=codeGreen] {OK} (l2a);
+  \draw[fail] (l2a.south) -- node[right, label, color=codeRed] {FAIL} (l2b);
+
+  % Level 3
+  \node[hc, below=1.2cm of l2] (l3) {\textbf{Seviye~3:} WS Keepalive (30s)};
+  \node[hc, right=2.5cm of l3] (l3a) {Ba\u{g}lant{\i} canl{\i}};
+  \draw[ok] (l3) -- node[above, label, color=codeGreen] {ping} (l3a);
+\end{tikzpicture}
+\caption{LocoDex health check hiyerar\c{s}isi}
+\label{fig:health-check}
+\end{figure}
+
+\begin{kodref}{llms.py --- Statik Service Discovery}
+\begin{lstlisting}
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST")
+LMSTUDIO_HOST = os.environ.get("LMSTUDIO_HOST")
+
+if OLLAMA_HOST:
+    try:
+        requests.get(OLLAMA_HOST, timeout=2)
+        API_BASE = OLLAMA_HOST
+        PROVIDER = "ollama"
+    except requests.exceptions.RequestException:
+        pass
+\end{lstlisting}
+Bu ``static service discovery with health check'' pattern'idir.
+\end{kodref}
+
+
+% ============================================================
+\section{Timeout Stratejileri}
+\label{sec:timeouts}
+
+\subsection{Timeout Hiyerar\c{s}isi}
+\label{sec:timeout-hierarchy}
+
+LocoDex'teki timeout de\u{g}erleri b\"{u}y\"{u}kten k\"{u}\c{c}\"{u}\u{g}e:
+
+\begin{table}[H]
+\centering
+\caption{Timeout hiyerar\c{s}isi ve gerek\c{c}eleri}
+\label{tab:timeouts}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{rlXl}
+\toprule
+\color{chapterBlue}\textbf{Seviye} & \color{chapterBlue}\textbf{Timeout (s)} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{Kaynak} \\
+\midrule
+1 & 600  & Model inference (LLM)           & llms.py \\
+2 & 300  & Ollama API \c{c}a\u{g}r{\i}s{\i}          & smart\_multilingual \\
+3 & 300  & WebSocket receive               & server.py \\
+4 & 120  & LM Studio API                   & smart\_multilingual \\
+5 & 15   & Web scraping                    & smart\_multilingual \\
+6 & 2    & Health check                    & llms.py \\
+7 & 1    & Search rate limit               & smart\_multilingual \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{LLM Inference S\"{u}resi Modeli}
+\label{sec:inference-time}
+
+\begin{equation}
+\label{eq:inference}
+T_{\mathrm{inference}} = T_{\mathrm{prefill}} + T_{\mathrm{decode}} = \frac{N_{\mathrm{input}}}{\text{throughput}_{\mathrm{prefill}}} + N_{\mathrm{output}} \cdot T_{\mathrm{per\_token}}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Model boyutu ve donan{\i}ma g\"{o}re inference s\"{u}releri ($N_{\mathrm{input}}=2000$, $N_{\mathrm{output}}=3000$ token)}
+\label{tab:inference-times}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lrrrrr}
+\toprule
+\color{chapterBlue}\textbf{Senaryo} & \color{chapterBlue}\textbf{$T_{\mathrm{prefill}}$} & \color{chapterBlue}\textbf{$T_{\mathrm{decode}}$} & \color{chapterBlue}\textbf{$T_{\mathrm{toplam}}$} & \color{chapterBlue}\textbf{600s yeterli?} \\
+\midrule
+7B model, CPU  & 40~s  & 300~s   & 340~s  & Evet \\
+70B model, CPU & 400~s & 3000~s  & 3400~s & \color{codeRed}Hay{\i}r \\
+7B model, GPU  & 2~s   & 30~s    & 32~s   & Evet \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+\section{Circuit Breaker Pattern: Exponential Backoff}
+\label{sec:circuit-breaker}
+
+\subsection{Matematiksel Form\"{u}l}
+\label{sec:exp-backoff}
+
+\begin{kodref}{llms.py --- tenacity Retry Konfigurasyonu}
+\begin{lstlisting}
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(
+        multiplier=1, min=4, max=15
+    )
+)
+\end{lstlisting}
+\end{kodref}
+
+Exponential backoff bekleme form\"{u}l\"{u}:
+
+\begin{equation}
+\label{eq:exp-backoff}
+T_{\mathrm{wait}}(n) = \min\!\bigl(\max(\text{multiplier} \cdot 2^n,\; \text{min}),\; \text{max}\bigr)
+\end{equation}
+
+LocoDex'teki somut de\u{g}erler (multiplier=1, min=4, max=15):
+
+\begin{table}[H]
+\centering
+\caption{Exponential backoff deneme s\"{u}releri}
+\label{tab:backoff}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{0.8\textwidth}{crrrr}
+\toprule
+\color{chapterBlue}\textbf{Deneme $n$} & \color{chapterBlue}\textbf{$2^n$} & \color{chapterBlue}\textbf{$\max(\cdot, 4)$} & \color{chapterBlue}\textbf{$\min(\cdot, 15)$} & \color{chapterBlue}\textbf{Sonu\c{c}} \\
+\midrule
+0 & 1 & 4 & 4  & 4~s \\
+1 & 2 & 4 & 4  & 4~s \\
+2 & --- & --- & --- & VAZGE\c{C} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Toplam Bekleme S\"{u}resi}
+\label{sec:total-wait}
+
+En k\"{o}t\"{u} durumda (3 denemede de ba\c{s}ar{\i}s{\i}z):
+
+\begin{equation}
+\label{eq:total-wait}
+T_{\mathrm{toplam}}^{\max} = T_{\mathrm{call}_1} + T_{\mathrm{wait}}(0) + T_{\mathrm{call}_2} + T_{\mathrm{wait}}(1) + T_{\mathrm{call}_3} = 600 + 4 + 600 + 4 + 600 = 1808\;\text{s}
+\end{equation}
+
+En iyi durumda (h{\i}zl{\i} ba\c{s}ar{\i}s{\i}zl{\i}k):
+$T_{\mathrm{toplam}}^{\min} = 0.1 + 4 + 0.1 + 4 + 0.1 = 8.3\;\text{s}$
+
+\subsection{Thundering Herd Problemi}
+\label{sec:thundering-herd}
+
+$N$ istemci ayn{\i} anda ba\c{s}ar{\i}s{\i}z olursa:
+
+\begin{itemize}
+  \item \textbf{Sabit bekleme:} $t=4$s'de $N$ istemci yeniden dener $\to$ sunucu \c{c}\"{o}k\"{u}\c{s}
+  \item \textbf{Exponential backoff:} $t=4, 8, 16\ldots$ $\to$ y\"{u}klenme da\u{g}{\i}t{\i}l{\i}r
+  \item \textbf{Exponential + jitter (en iyi):} $t=\text{rand}(4), \text{rand}(8)\ldots$ $\to$ en iyi da\u{g}{\i}l{\i}m
+\end{itemize}
+
+\begin{equation}
+\label{eq:jitter}
+T_{\mathrm{wait}}^{\mathrm{jitter}}(n) = T_{\mathrm{wait}}(n) \cdot U(0.5, 1.5)
+\end{equation}
+
+\begin{dikkat}
+LocoDex'te jitter uygulanmam{\i}\c{s}t{\i}r. Tek kullan{\i}c{\i}l{\i} senaryoda sorun de\u{g}ildir, ancak \c{c}ok kullan{\i}c{\i}l{\i} senaryoda thundering herd riski ta\c{s}{\i}r.
+\end{dikkat}
+
+\subsection{Circuit Breaker Durum Makinesi}
+\label{sec:cb-state-machine}
+
+Tam circuit breaker pattern'i \"{u}\c{c} durumdan olu\c{s}ur:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  state/.style={circle, draw=boxBorder, fill=boxBG, text=textWhite,
+    minimum size=1.8cm, font=\small\bfseries},
+  arrow/.style={->, >=stealth, thick, color=chapterBlue},
+  label/.style={font=\scriptsize, color=sectionBlue}
+]
+  \node[state, fill=pageBG!80!codeGreen] (closed) {CLOSED};
+  \node[state, fill=pageBG!80!codeRed, right=3.5cm of closed] (open) {OPEN};
+  \node[state, fill=pageBG!80!codeYellow, below=2cm of open] (half) {HALF-OPEN};
+
+  \draw[arrow] (closed) -- node[above, label] {$N$ ba\c{s}ar{\i}s{\i}zl{\i}k} (open);
+  \draw[arrow] (open) -- node[right, label] {$T_{\mathrm{reset}}$ s\"{u}resi} (half);
+  \draw[arrow] (half) -| node[below, label, pos=0.3] {ba\c{s}ar{\i}} (closed);
+  \draw[arrow] (half) -- node[left, label] {ba\c{s}ar{\i}s{\i}z} (open);
+  \draw[arrow, loop left] (closed) to node[left, label] {ba\c{s}ar{\i}} (closed);
+\end{tikzpicture}
+\caption{Circuit breaker durum makinesi}
+\label{fig:circuit-breaker}
+\end{figure}
+
+\begin{dikkat}
+LocoDex'te yaln{\i}zca retry (CLOSED state) uygulanm{\i}\c{s}t{\i}r. OPEN ve HALF-OPEN durumlar{\i} mevcut de\u{g}ildir. Bu, ba\c{s}ar{\i}s{\i}z bir servise s\"{u}rekli istek g\"{o}nderilmesine neden olabilir.
+\end{dikkat}
+
+
+% ============================================================
+\section{Backpressure ve Rate Limiting}
+\label{sec:backpressure}
+
+\subsection{Rate Limiting Yakla\c{s}{\i}m{\i}}
+\label{sec:rate-limiting}
+
+\begin{kodref}{smart\_multilingual\_research.py --- Basit Rate Limiting}
+\begin{lstlisting}
+await asyncio.sleep(1)  # Rate limiting
+\end{lstlisting}
+\end{kodref}
+
+Bu en basit rate limiting: her arama sorgusundan sonra 1~saniye beklenir.
+
+\subsubsection{Token Bucket Algoritmas{\i} (Teorik)}
+
+Daha sofistike rate limiting i\c{c}in token bucket:
+
+\begin{algorithm}[H]
+\caption{Token Bucket Algoritmas{\i}}
+\label{alg:token-bucket}
+\begin{algorithmic}[1]
+\State $R \gets$ token \"{u}retim h{\i}z{\i} (token/saniye)
+\State $B \gets$ kova kapasitesi (maksimum token)
+\State kova $\gets B$ \Comment{Ba\c{s}lang{\i}\c{c}: dolu}
+\For{her istek}
+  \If{kova $\geq 1$}
+    \State kova $\gets$ kova $- 1$
+    \State \.{I}Z\.{I}N VER
+  \Else
+    \State REDDET veya BEKLE
+  \EndIf
+\EndFor
+\State \textit{Her saniye:} kova $\gets \min(\text{kova} + R,\; B)$
+\end{algorithmic}
+\end{algorithm}
+
+LocoDex'in basit \texttt{sleep(1)} y\"{o}ntemi asl{\i}nda $R = 1$ istek/s'lik sabit h{\i}z s{\i}n{\i}r{\i}d{\i}r.
+
+\subsection{Little's Law ve Backpressure Analizi}
+\label{sec:littles-law}
+
+\begin{equation}
+\label{eq:littles-law}
+L = \lambda \cdot W
+\end{equation}
+
+Burada $L =$ sistemdeki ortalama istek say{\i}s{\i}, $\lambda =$ istek geli\c{s} h{\i}z{\i} (istek/s), $W =$ ortalama i\c{s}lem s\"{u}resi (s).
+
+\begin{ornek}
+LocoDex i\c{c}in: $\lambda = 0.1$ istek/s, $W = 120$~s (ortalama ara\c{s}t{\i}rma s\"{u}resi):
+\[
+L = 0.1 \times 120 = 12 \;\text{e\c{s} zamanl{\i} istek}
+\]
+Her istek bellekte $\sim$314~KB (50~KB veri + 64~KB WS tampon + 200~KB Python nesneleri). 12 istek $= 3.8$~MB. Kabul edilebilir.
+
+Ancak $\lambda = 1$ istek/s olursa: $L = 120$ istek, bellek $= 37$~MB. Hala kabul edilebilir ama art{\i}\c{s} e\u{g}ilimi riskli.
+\end{ornek}
+
+
+% ============================================================
+%  KISIM 3: ASENKRON PROGRAMLAMA MODELI
+% ============================================================
+
+\section{I/O Multiplexing Evrimi}
+\label{sec:io-multiplexing}
+
+\subsection{select'ten epoll'a: Tarihsel Geli\c{s}im}
+\label{sec:select-epoll}
+
+\.{I}\c{s}letim sistemi d\"{u}zeyinde I/O multiplexing'in evrimi:
+
+\begin{table}[H]
+\centering
+\caption{I/O multiplexing mekanizmalar{\i}n{\i}n evrimi}
+\label{tab:io-multiplexing}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lrlX}
+\toprule
+\color{chapterBlue}\textbf{Mekanizma} & \color{chapterBlue}\textbf{Y{\i}l} & \color{chapterBlue}\textbf{Karma\c{s}{\i}kl{\i}k} & \color{chapterBlue}\textbf{Not} \\
+\midrule
+\texttt{select()} & 1983 & $O(N)$ per \c{c}a\u{g}r{\i}  & BSD, $N$ s{\i}n{\i}rl{\i} (FD\_SETSIZE=1024) \\
+\texttt{poll()}   & 1997 & $O(N)$ per \c{c}a\u{g}r{\i}  & POSIX, $N$ s{\i}n{\i}r{\i} yok \\
+\texttt{epoll}    & 2002 & $O(1)$ amortized     & Linux 2.6, red-black tree \\
+\texttt{kqueue}   & 2000 & $O(1)$ amortized     & FreeBSD/macOS, batch i\c{s}lem \\
+IOCP              & ---  & $O(1)$               & Windows, tamamlanma portlar{\i} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{select() problemi:} Her \c{c}a\u{g}r{\i}da (1) \texttt{fd\_set}'i kernel'a kopyala: $O(N)$, (2) t\"{u}m fd'leri tara: $O(N)$, (3) sonu\c{c}lar{\i} user space'e kopyala: $O(N)$. $N = 10{,}000$ soket i\c{c}in her \c{c}a\u{g}r{\i} $\sim$10{,}000 i\c{s}lem.
+
+\textbf{epoll() \c{c}\"{o}z\"{u}m\"{u}:}
+\begin{align}
+\texttt{epoll\_ctl}: &\quad O(\log N) \quad \text{(red-black tree'ye kay{\i}t, tek sefer)} \\
+\texttt{epoll\_wait}: &\quad O(k) \quad \text{($k =$ haz{\i}r event say{\i}s{\i}, $N$ de\u{g}il!)}
+\end{align}
+
+\begin{ornek}
+$N = 10{,}000$ soket, $k = 5$ haz{\i}r event:
+\begin{align*}
+\texttt{select} &: O(10{,}000) \;\text{per \c{c}a\u{g}r{\i}} \\
+\texttt{epoll}  &: O(5) \;\text{per \c{c}a\u{g}r{\i}} = 2000\times \;\text{daha verimli}
+\end{align*}
+\end{ornek}
+
+\subsection{asyncio Event Loop \.{I}\c{c} Yap{\i}s{\i}}
+\label{sec:asyncio-internals}
+
+Python asyncio'nun basitle\c{s}tirilmi\c{s} event loop implementasyonu:
+
+\begin{lstlisting}[caption={asyncio event loop i\c{c} yap{\i}s{\i} (basitle\c{s}tirilmi\c{s})},label={lst:event-loop}]
+class EventLoop:
+    def __init__(self):
+        self._ready = deque()        # Hemen calistirilacak
+        self._scheduled = []         # Heap: zamanlanmis (timer)
+        self._selector = selectors.DefaultSelector()
+
+    def run_forever(self):
+        while True:
+            # 1. Zamanlanmis callback'leri kontrol et
+            now = time.monotonic()
+            while self._scheduled and \
+                  self._scheduled[0].when <= now:
+                handle = heapq.heappop(self._scheduled)
+                self._ready.append(handle)
+
+            # 2. I/O event'lerini yokla
+            timeout = self._calculate_timeout()
+            events = self._selector.select(timeout)
+            for key, mask in events:
+                self._ready.append(key.data)
+
+            # 3. Hazir callback'leri calistir
+            ntodo = len(self._ready)
+            for _ in range(ntodo):
+                handle = self._ready.popleft()
+                handle._run()
+\end{lstlisting}
+
+\textbf{Veri Yap{\i}lar{\i} ve Karma\c{s}{\i}kl{\i}klar{\i}:}
+
+\begin{table}[H]
+\centering
+\caption{asyncio event loop veri yap{\i}lar{\i}}
+\label{tab:event-loop-ds}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{llXX}
+\toprule
+\color{chapterBlue}\textbf{Yap{\i}} & \color{chapterBlue}\textbf{Tip} & \color{chapterBlue}\textbf{Ekleme} & \color{chapterBlue}\textbf{\c{C}{\i}karma} \\
+\midrule
+\texttt{\_ready}     & \texttt{deque}    & $O(1)$ append     & $O(1)$ popleft \\
+\texttt{\_scheduled} & min-heap          & $O(\log n)$ push  & $O(\log n)$ pop \\
+\texttt{\_selector}  & epoll/kqueue      & $O(\log N)$ reg.  & $O(k)$ select \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+\section{Coroutine, Thread ve Process: Context Switch Maliyeti}
+\label{sec:context-switch}
+
+\subsection{Context Switch Maliyet Analizi}
+\label{sec:context-switch-cost}
+
+\begin{table}[H]
+\centering
+\caption{Concurrency mekanizmalar{\i}n{\i}n maliyet kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:context-switch}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{Xrrr}
+\toprule
+\color{chapterBlue}\textbf{Metrik} & \color{chapterBlue}\textbf{Process} & \color{chapterBlue}\textbf{Thread} & \color{chapterBlue}\textbf{Coroutine} \\
+\midrule
+Context switch        & 1.7--16.7~$\mu$s   & 0.33--3.3~$\mu$s  & $\sim$1--5~$\mu$s \\
+Bellek overhead       & $\sim$2~MB/process  & $\sim$64~KB/thread & $\sim$1~KB/coroutine \\
+Olu\c{s}turma maliyeti   & $\sim$1--10~ms      & $\sim$100~$\mu$s   & $\sim$1~$\mu$s \\
+Maks e\c{s} zamanl{\i} (4GB)& $\sim$2{,}000        & $\sim$65{,}000      & $\sim$4{,}000{,}000 \\
+Ger\c{c}ek paralellik    & Evet (multi-core) & GIL k{\i}s{\i}tl{\i}       & Hay{\i}r (tek thread) \\
+I/O concurrency       & \.{I}yi             & \.{I}yi             & En iyi \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Process Context Switch}
+Kaydedilmesi gerekenler: CPU register'lar{\i} (128~byte), program counter (8~byte), stack pointer (8~byte), page table base register (8~byte), FPU/SSE state ($\sim$512~byte), kernel stack ($\sim$8~KB). Ek i\c{s}lemler: TLB flush ($\sim$1000~cycle), cache cold start ($\sim$10{,}000~cycle), kernel mode ge\c{c}i\c{s}i ($\sim$500~cycle). \textbf{Toplam: 5{,}000--50{,}000 cycle} (3~GHz CPU'da 1.7--16.7~$\mu$s).
+
+\subsubsection{Thread Context Switch}
+Page table de\u{g}i\c{s}mez (ayn{\i} process), TLB flush gerekmez. \textbf{Toplam: 1{,}000--10{,}000 cycle} (0.33--3.3~$\mu$s).
+
+\subsubsection{Coroutine ``Context Switch''}
+CPU register kaydedilmez (ayn{\i} thread devam eder), kernel mode ge\c{c}i\c{s}i yok. Sadece Python frame nesnesi ve generator/coroutine state ($\sim$200--500~byte) saklan{\i}r. \texttt{YIELD\_FROM} veya \texttt{SEND} bytecode instruction'{\i}. \textbf{Toplam: $\sim$100--500 bytecode instruction} ($\sim$1--5~$\mu$s).
+
+\subsection{LocoDex \.{I}\c{c}in Analiz}
+\label{sec:locodex-concurrency}
+
+LocoDex'teki 6 temel i\c{s}lemin tamam{\i} I/O-bound'dur:
+
+\begin{enumerate}
+  \item WebSocket mesaj dinleme (I/O-bound)
+  \item Keepalive g\"{o}nderme (I/O-bound, timer-based)
+  \item Web arama (I/O-bound, network)
+  \item URL'den i\c{c}erik \c{c}ekme (I/O-bound, network)
+  \item LLM model \c{c}a\u{g}r{\i}s{\i} (I/O-bound, Ollama'ya HTTP)
+  \item JSON parsing (CPU-bound, ama \c{c}ok k\"{u}\c{c}\"{u}k)
+\end{enumerate}
+
+\begin{formulbox}[Bellek Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}: 10 e\c{s} zamanl{\i} oturum, 10 aiohttp istegi]
+\begin{align*}
+\text{Thread:}    &\quad 100 \times 64\;\text{KB} = 6.4\;\text{MB} \\
+\text{Coroutine:} &\quad 100 \times 1\;\text{KB}  = 100\;\text{KB} \quad (64\times \text{tasarruf})
+\end{align*}
+\end{formulbox}
+
+
+% ============================================================
+\section{aiohttp ve Connection Pooling}
+\label{sec:aiohttp}
+
+\subsection{Senkron ve Asenkron HTTP \.{I}stemci Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{sec:sync-vs-async-http}
+
+\begin{equation}
+\label{eq:sync-total}
+T_{\mathrm{sync}} = \sum_{i=1}^{N} T_i \quad \text{(s{\i}ral{\i} i\c{s}lem)}
+\end{equation}
+
+\begin{equation}
+\label{eq:async-total}
+T_{\mathrm{async}} = \max_{i \in \{1,\ldots,N\}} T_i \quad \text{(paralel i\c{s}lem)}
+\end{equation}
+
+\begin{equation}
+\label{eq:speedup}
+\text{H{\i}zlanma} = \frac{T_{\mathrm{sync}}}{T_{\mathrm{async}}} = \frac{\sum T_i}{\max T_i} \leq N
+\end{equation}
+
+\subsection{Connection Pool Matematigi}
+\label{sec:conn-pool}
+
+TCP ba\u{g}lant{\i}s{\i} kurma maliyeti:
+\begin{align}
+T_{\mathrm{TCP}} &= 1\;\text{RTT (SYN + SYN-ACK + ACK)} \\
+T_{\mathrm{TLS}} &= 2\;\text{RTT (TLS 1.2) veya } 1\;\text{RTT (TLS 1.3)}
+\end{align}
+
+$N$ ard{\i}\c{s}{\i}k istek i\c{c}in (ayn{\i} host'a):
+\begin{align}
+\text{requests (Session yok):} &\quad T = N \cdot (T_{\mathrm{TCP}} + T_{\mathrm{TLS}} + T_{\mathrm{data}}) \\
+\text{aiohttp (conn. pool):}   &\quad T = (T_{\mathrm{TCP}} + T_{\mathrm{TLS}}) + N \cdot T_{\mathrm{data}} \\
+\text{Tasarruf:}                &\quad (N-1) \cdot (T_{\mathrm{TCP}} + T_{\mathrm{TLS}})
+\end{align}
+
+\begin{dikkat}
+LocoDex'te her \texttt{call\_local\_model} \c{c}a\u{g}r{\i}s{\i}nda yeni \texttt{ClientSession} olu\c{s}turulmaktad{\i}r. Bu bir \textbf{anti-pattern'dir} --- connection reuse devre d{\i}\c{s}{\i} kal{\i}r.
+
+Do\u{g}ru kullan{\i}m:
+\begin{lstlisting}
+class SmartMultilingualResearcher:
+    def __init__(self, ...):
+        self._session = aiohttp.ClientSession()
+
+    async def call_local_model(self, ...):
+        async with self._session.post(...) as resp:
+            # Ayni session, connection reuse mumkun
+\end{lstlisting}
+\end{dikkat}
+
+
+% ============================================================
+\section{ThreadPoolExecutor ve GIL}
+\label{sec:threadpool-gil}
+
+\subsection{Senkron Fonksiyonlar{\i} Asenkron Event Loop'ta \c{C}al{\i}\c{s}t{\i}rma}
+\label{sec:run-in-executor}
+
+\begin{kodref}{smart\_multilingual\_research.py --- ThreadPoolExecutor Kullan{\i}m{\i}}
+\begin{lstlisting}
+with concurrent.futures.ThreadPoolExecutor() as executor:
+    search_results = await asyncio.get_event_loop() \
+        .run_in_executor(executor, sync_search)
+\end{lstlisting}
+\texttt{googlesearch} k\"{u}t\"{u}phanesi senkrondur. Do\u{g}rudan \texttt{await} yap{\i}lamaz. \c{C}\"{o}z\"{u}m: thread pool'da senkron fonksiyonu \c{c}al{\i}\c{s}t{\i}r{\i}p sonucu \texttt{await} ile beklemek.
+\end{kodref}
+
+\subsection{Amdahl Yasas{\i} ve Thread Pool Boyutu}
+\label{sec:amdahl}
+
+Varsay{\i}lan thread pool boyutu (Python 3.8+):
+\begin{equation}
+\label{eq:default-workers}
+\text{default\_workers} = \min(32, \;\texttt{os.cpu\_count()} + 4)
+\end{equation}
+
+Amdahl Yasas{\i}:
+\begin{equation}
+\label{eq:amdahl}
+S(N) = \frac{1}{(1 - P) + P/N}
+\end{equation}
+
+Burada $S(N) = N$ thread ile h{\i}zlanma, $P =$ paralelle\c{s}tirilebilir k{\i}s{\i}m (0--1).
+
+\begin{table}[H]
+\centering
+\caption{I/O-bound i\c{s}lemler i\c{c}in Amdahl Yasas{\i} ($P = 0.95$)}
+\label{tab:amdahl}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{0.7\textwidth}{rrr}
+\toprule
+\color{chapterBlue}\textbf{$N$ (thread)} & \color{chapterBlue}\textbf{$S(N)$ (h{\i}zlanma)} & \color{chapterBlue}\textbf{Art{\i}\c{s}{\i}msal} \\
+\midrule
+4   & 3.48$\times$  & --- \\
+8   & 5.92$\times$  & 1.70$\times$ \\
+16  & 9.14$\times$  & 1.54$\times$ \\
+32  & 12.55$\times$ & 1.37$\times$ \\
+64  & 15.43$\times$ & 1.23$\times$ \\
+$\infty$ & 20$\times$ & --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+32'den sonra kazan{\i}m azal{\i}r (diminishing returns). 32, iyi bir uzla\c{s}ma noktas{\i}d{\i}r.
+
+\subsection{GIL (Global Interpreter Lock) ve I/O-Bound Etki Analizi}
+\label{sec:gil}
+
+CPython'da GIL, herhangi bir anda yaln{\i}zca bir thread'in Python bytecode \c{c}al{\i}\c{s}t{\i}rmas{\i}na izin veren bir mutex'tir.
+
+\begin{equation}
+\label{eq:gil-cpu}
+\text{CPU-bound:} \quad T_{\mathrm{GIL}}(N) = T \quad \text{(hi\c{c} h{\i}zlanma yok)}
+\end{equation}
+
+\begin{equation}
+\label{eq:gil-io}
+\text{I/O-bound:} \quad T_{\mathrm{GIL}}(N) \approx T_{\mathrm{CPU}} + \frac{T_{\mathrm{IO}}}{N} \quad \text{(I/O paralelle\c{s}iyor)}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{LocoDex i\c{s}lem profili --- GIL etkisi}
+\label{tab:gil-profile}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{Xrrr}
+\toprule
+\color{chapterBlue}\textbf{\.{I}\c{s}lem} & \color{chapterBlue}\textbf{CPU (s)} & \color{chapterBlue}\textbf{I/O (s)} & \color{chapterBlue}\textbf{CPU Oran{\i}} \\
+\midrule
+Web arama          & 0.01  & 2.0   & \%0.5 \\
+\.{I}\c{c}erik \c{c}ekme      & 0.05  & 1.0   & \%5 \\
+JSON parsing       & 0.01  & 0     & \%100 \\
+LLM model \c{c}a\u{g}r{\i}s{\i} & 0.01  & 30.0  & \%0.03 \\
+WebSocket mesaj    & 0.001 & 0.01  & \%10 \\
+\midrule
+\textbf{TOPLAM}    & \textbf{0.081} & \textbf{33.01} & \textbf{\%0.25} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Zaman{\i}n \%99.75'i I/O beklemede ge\c{c}irildi\u{g}i i\c{c}in GIL pratikte \textbf{s{\i}f{\i}r etki} yapar. asyncio (coroutine) LocoDex i\c{c}in ideal se\c{c}imdir.
+
+
+% ============================================================
+\section{Timer Heap ve asyncio Zamanlama Hassasiyeti}
+\label{sec:timer-heap}
+
+\subsection{Min-Heap Veri Yap{\i}s{\i}}
+\label{sec:min-heap}
+
+asyncio timer'lar{\i} min-heap veri yap{\i}s{\i}nda saklan{\i}r:
+
+\begin{equation}
+\label{eq:heap-property}
+\text{Heap property:} \quad \texttt{parent.when} \leq \texttt{child.when}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Heap i\c{s}lemleri karma\c{s}{\i}kl{\i}klar{\i}}
+\label{tab:heap-ops}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{0.8\textwidth}{Xlr}
+\toprule
+\color{chapterBlue}\textbf{\.{I}\c{s}lem} & \color{chapterBlue}\textbf{Karma\c{s}{\i}kl{\i}k} & \color{chapterBlue}\textbf{Not} \\
+\midrule
+Timer ekleme (\texttt{heappush}) & $O(\log n)$ & Sift-up \\
+Timer tetikleme (\texttt{heappop}) & $O(\log n)$ & Sift-down \\
+Timer iptal (\texttt{cancel}) & $O(1)$ & Lazy deletion \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{ornek}
+Tek ara\c{s}t{\i}rma oturumunda aktif timer'lar: keepalive (30s), receive timeout (300s), model timeout (300s). Timer heap boyutu: 3.
+$O(\log 3) = O(1.58) \approx O(1)$. 10 e\c{s} zamanl{\i} oturumda: 30 timer, $O(\log 30) \approx 5$ kar\c{s}{\i}la\c{s}t{\i}rma $\approx 50$~ns.
+\end{ornek}
+
+
+% ============================================================
+\section{Tam Ara\c{s}t{\i}rma D\"{o}ng\"{u}s\"{u}: Sayisal \"{O}rnek}
+\label{sec:full-cycle}
+
+Tek bir ara\c{s}t{\i}rma iste\u{g}inin t\"{u}m a\c{s}amalar{\i} ve s\"{u}releri:
+
+\begin{table}[H]
+\centering
+\caption{Tam ara\c{s}t{\i}rma d\"{o}ng\"{u}s\"{u} --- timeout ve s\"{u}re analizi}
+\label{tab:full-cycle}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{clrrr}
+\toprule
+\color{chapterBlue}\textbf{Ad{\i}m} & \color{chapterBlue}\textbf{\.{I}\c{s}lem} & \color{chapterBlue}\textbf{Timeout (s)} & \color{chapterBlue}\textbf{Tipik (s)} & \color{chapterBlue}\textbf{En k\"{o}t\"{u} (s)} \\
+\midrule
+1 & WS mesaj bekle        & 300  & 2    & 300 \\
+2 & Dil alg{\i}la            & ---  & 0.1  & 1 \\
+3 & Sorgu olu\c{s}tur (LLM)  & 300  & 30   & 300 \\
+4 & Web arama $\times$4    & 5    & 8    & 20 \\
+5 & \.{I}\c{c}erik \c{c}ekme $\times$10 & 15   & 30   & 150 \\
+6 & Kaynak de\u{g}erlendirme  & 300  & 100  & 600 \\
+7 & \.{I}\c{c}erik analizi      & 300  & 200  & 600 \\
+8 & Gap analizi            & 300  & 30   & 300 \\
+9 & Final rapor            & 300  & 60   & 300 \\
+\midrule
+  & \textbf{TOPLAM}        &      & \textbf{$\sim$460} & \textbf{$\sim$2571} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{itemize}
+  \item \textbf{Tipik s\"{u}re:} $\sim$7.7~dakika
+  \item \textbf{En k\"{o}t\"{u} durum:} $\sim$43~dakika
+  \item \textbf{En iyi durum (GPU):} $\sim$1~dakika
+\end{itemize}
+
+Bu s\"{u}reler WebSocket keepalive mekanizmas{\i}n{\i}n (30s aral{\i}k) neden gerekli oldu\u{g}unu a\c{c}{\i}klar: 7.7 dakikal{\i}k tipik i\c{s}lem s{\i}ras{\i}nda en az $\lfloor 460/30 \rfloor = 15$ keepalive mesaj{\i} g\"{o}nderilir.
+
+
+% ============================================================
+%  BOLUM SONU OZET KUTUSU
+% ============================================================
+
+\begin{ozet}
+Bu b\"{o}l\"{u}mde LocoDex Deep Search'in sistem mimarisini \"{u}\c{c} ana eksende inceledik:
+
+\textbf{1. FastAPI + WebSocket:} HTTP polling'e k{\i}yasla \%98 bant geni\c{s}li\u{g}i tasarrufu sa\u{g}layan WebSocket se\c{c}imi, RFC~6455 handshake protokol\"{u}, XOR maskeleme, ve 30~saniyelik keepalive mekanizmas{\i}.
+
+\textbf{2. Microservice Desenleri:} CAP teoremi \c{c}er\c{c}evesinde modular monolith tercihinin gerek\c{c}esi ($5000\times$ daha d\"{u}\c{s}\"{u}k gecikme), Docker namespace izolasyonu, OverlayFS katmanl{\i} dosya sistemi (\%99.97 build cache tasarrufu), exponential backoff ile retry stratejisi, ve Little's Law ile backpressure analizi.
+
+\textbf{3. Asenkron Programlama:} \texttt{select}'ten \texttt{epoll}'a I/O multiplexing evrimi, asyncio event loop'un i\c{c} yap{\i}s{\i} (deque + min-heap + selector), coroutine-thread-process context switch maliyet kar\c{s}{\i}la\c{s}t{\i}rmas{\i} ($64\times$ bellek tasarrufu), GIL'in I/O-bound i\c{s}lemlerde \%0.25 CPU oran{\i} nedeniyle s{\i}f{\i}r etkisi, ve Amdahl Yasas{\i} ile thread pool boyutland{\i}rmas{\i}.
+
+\textbf{Tasar{\i}m kararlar{\i}n{\i}n ortak temas{\i}:} LocoDex tek kullan{\i}c{\i}l{\i}, lokal \c{c}al{\i}\c{s}an bir sistem oldu\u{g}u i\c{c}in basitlik \"{o}nceliklidir. Modular monolith, tek uvicorn worker, basit \texttt{sleep(1)} rate limiting gibi se\c{c}imler bu ba\u{g}lamda do\u{g}rudur. \"{O}l\c{c}ekleme gerekti\u{g}inde microservice ge\c{c}i\c{s}i, multi-worker deployment, ve token bucket rate limiting uygulanabilir.
+\end{ozet}

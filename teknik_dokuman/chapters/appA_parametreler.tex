@@ -1,0 +1,160 @@
+% ============================================================
+%  EK A: PARAMETRE TABLOSU
+% ============================================================
+
+Bu ek, projede kullan{\i}lan t\"{u}m sabitleri, hiperparametreleri ve yap{\i}land{\i}rma de\u{g}erlerini listeler.
+
+\section{Sunucu Parametreleri}
+
+\begin{table}[H]
+\centering
+\caption{FastAPI Sunucu Yap{\i}land{\i}rmas{\i}}
+\label{tab:server_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+Port & Sunucu dinleme portu & 8001 \\
+Host & Dinleme adresi & 0.0.0.0 \\
+WebSocket receive timeout & Mesaj bekleme s\"{u}resi & 300\,s \\
+Keepalive interval & Ping aral{\i}\u{g}{\i} & 30\,s \\
+Log level & G\"{u}nl\"{u}k detay d\"{u}zeyi & DEBUG \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{LLM Parametreleri}
+
+\begin{table}[H]
+\centering
+\caption{LLM \c{C}a\u{g}r{\i} Parametreleri}
+\label{tab:llm_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+Temperature (LiteLLM) & \"{U}retim rastgelelik katsay{\i}s{\i} & 0.0 \\
+Temperature (Direct) & Lokal model temperature & 0.3 / 0.7 \\
+max\_tokens (analiz) & Kaynak analizi token limiti & 500 \\
+max\_tokens (sentez) & Sentez token limiti & 800 \\
+max\_tokens (rapor) & Final rapor token limiti & 3000--5000 \\
+max\_tokens (g\"{u}venilirlik) & Kaynak de\u{g}erlendirme & 200 \\
+Timeout (LM~Studio) & LM Studio API timeout & 120\,s \\
+Timeout (Ollama) & Ollama API timeout & 300\,s \\
+Timeout (LiteLLM) & LiteLLM global timeout & 600\,s \\
+Retry attempts & Tekrar deneme say{\i}s{\i} & 3 \\
+Retry min wait & Minimum bekleme & 4\,s \\
+Retry max wait & Maksimum bekleme & 15\,s \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Arama Parametreleri}
+
+\begin{table}[H]
+\centering
+\caption{Web Arama Yap{\i}land{\i}rmas{\i}}
+\label{tab:search_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+max\_results (Google) & Google arama sonucu limiti & 8--12 \\
+max\_results (DuckDuckGo) & DuckDuckGo sonucu limiti & 4--5 \\
+max\_results (Tavily) & Tavily API sonucu limiti & 3 \\
+max\_queries & Toplam arama sorgusu say{\i}s{\i} & 4--5 \\
+Rate limit delay & Arama arası bekleme & 1\,s \\
+Content extraction timeout & URL i\c{c}erik \c{c}ekme & 5--15\,s \\
+Content max length & Metin kesme limiti & 3000--4000 karakter \\
+HTTP response max & Maksimum yan{\i}t boyutu & 10\,MB \\
+Text content max & Metin i\c{c}erik limiti & 50\,KB \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{G\"{u}venilirlik De\u{g}erlendirme Parametreleri}
+
+\begin{table}[H]
+\centering
+\caption{Kaynak G\"{u}venilirlik E\c{s}ik De\u{g}erleri}
+\label{tab:reliability_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+Min reliability (RealDeep) & Filtreleme e\c{s}i\u{g}i (0--100) & 30 \\
+Min reliability (Smart) & Filtreleme e\c{s}i\u{g}i (1--10) & 6 \\
+Max sources analyzed & Analiz edilen kaynak limiti & 10--20 \\
+Staleness (fast tech) & H{\i}zl{\i} de\u{g}i\c{s}en teknoloji & 6 ay \\
+Staleness (medium tech) & Orta h{\i}zl{\i} teknoloji & 2 y{\i}l \\
+Staleness (slow tech) & Yavaş de\u{g}i\c{s}en teknoloji & 5 y{\i}l \\
+Staleness (very slow) & \c{C}ok yavaş de\u{g}i\c{s}en & 10 y{\i}l \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Podcast Parametreleri}
+
+\begin{table}[H]
+\centering
+\caption{Podcast \"{U}retim Parametreleri}
+\label{tab:podcast_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+TTS model & Ses sentez modeli & cartesia/sonic \\
+Sample rate & \"{O}rnekleme frekans{\i} & 44\,100\,Hz \\
+Audio format & \c{C}{\i}kt{\i} format{\i} & MP3 \\
+Host voice & Sunucu sesi & laidback woman \\
+Guest voice & Konuk sesi & customer support man \\
+Max line length & Diyalog sat{\i}r limiti & 100 karakter \\
+Script model & Script \"{u}retim modeli & Llama 3.1 70B \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Docker Yap{\i}land{\i}rmas{\i}}
+
+\begin{table}[H]
+\centering
+\caption{Docker Container Parametreleri}
+\label{tab:docker_params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Parametre} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{De\u{g}er} \\
+\midrule
+Base image & Docker temel imaj & python:3.11-slim \\
+Work directory & \c{C}al{\i}\c{s}ma dizini & /app \\
+Exposed port & A\c{c}{\i}k port & 8001 \\
+PYTHONUNBUFFERED & Tampon devre d{\i}\c{s}{\i} & 1 \\
+PYTHONIOENCODING & Karakter kodlamas{\i} & UTF-8 \\
+Research results dir & Sonu\c{c} dizini & /app/research\_results \\
+Desktop mount & Masa\"{u}st\"{u} ba\u{g}lama & /app/desktop \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{\"{O}nerilen Model Yap{\i}land{\i}rmalar{\i}}
+
+\begin{table}[H]
+\centering
+\caption{\"{O}nerilen Lokal LLM Modelleri ve Gereksinimleri}
+\label{tab:models}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\color{chapterBlue}\textbf{Model} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} & \color{chapterBlue}\textbf{RAM} & \color{chapterBlue}\textbf{VRAM} \\
+\midrule
+Gemma 3 12B & En y\"{u}ksek kalite, T\"{u}rk\c{c}e destek & 8\,GB & 8\,GB \\
+Llama 3.1 8B & Dengeli performans & 6\,GB & 6\,GB \\
+Mixtral 8x7B & MoE, geni\c{s} bilgi taban{\i} & 24\,GB & 24\,GB \\
+\bottomrule
+\end{tabularx}
+\end{table}

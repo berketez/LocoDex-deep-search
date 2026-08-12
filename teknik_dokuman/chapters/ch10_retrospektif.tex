@@ -1,0 +1,120 @@
+% ============================================================
+%  BÖLÜM 10: TASARIM KARARLARI VE RETROSPEKTİF
+% ============================================================
+
+Bu b\"{o}l\"{u}m, projenin geli\c{s}tirme s\"{u}recinde al{\i}nan temel tasar{\i}m kararlar{\i}n{\i}, bunlar{\i}n gerek\c{c}elerini ve sonradan elde edilen deneyimleri analiz eder.
+
+\section{Temel Mimari Kararlar}
+
+\subsection{Karar 1: FastAPI + WebSocket (REST yerine)}
+
+\textbf{Alternatifler:}
+\begin{itemize}
+  \item Flask + Server-Sent Events (SSE)
+  \item Django Channels + WebSocket
+  \item gRPC streaming
+  \item Saf REST API + polling
+\end{itemize}
+
+\textbf{Se\c{c}im:} FastAPI + WebSocket
+
+\textbf{Gerek\c{c}e:} Derin ara\c{s}t{\i}rma 2--5 dakika s\"{u}rebilir. Bu s\"{u}re boyunca kullan{\i}c{\i}ya ilerleme bilgisi verilmelidir. REST API ile polling yapmak gereksiz network traffic \"{u}retir. SSE ise tek y\"{o}nl\"{u}d\"{u}r --- kullan{\i}c{\i} ara\c{s}t{\i}rmay{\i} iptal edemez. WebSocket \c{c}ift y\"{o}nl\"{u} ileti\c{s}im sa\u{g}lar.
+
+FastAPI'nin async/await deste\u{g}i, I/O-bound operasyonlar (web araması, LLM \c{c}a\u{g}r{\i}lar{\i}) i\c{c}in idealdir. Flask senkron yap{\i}s{\i} nedeniyle bu senaryo i\c{c}in uygun de\u{g}ildir.
+
+\textbf{Sonu\c{c}:} Do\u{g}ru karar. WebSocket ile ger\c{c}ek zamanl{\i} ilerleme bildirimi kullan{\i}c{\i} deneyimini \"{o}nemli \"{o}l\c{c}\"{u}de iyile\c{s}tirdi.
+
+\subsection{Karar 2: LiteLLM Provider Abstraction}
+
+\textbf{Alternatifler:}
+\begin{itemize}
+  \item Do\u{g}rudan Ollama API \c{c}a\u{g}r{\i}lar{\i}
+  \item Do\u{g}rudan LM Studio API \c{c}a\u{g}r{\i}lar{\i}
+  \item \"{O}zel adapter s{\i}n{\i}flar{\i} yazma
+  \item LangChain LLM wrapper'lar{\i}
+\end{itemize}
+
+\textbf{Se\c{c}im:} LiteLLM
+
+\textbf{Gerek\c{c}e:} LiteLLM, 100+ LLM provider'{\i} tek bir API ile destekler. Model string format{\i} (\texttt{provider/model}) ile routing sa\u{g}lar. Bu sayede Ollama'dan LM~Studio'ya ge\c{c}i\c{s} tek sat{\i}r de\u{g}i\c{s}ikli\u{g}i gerektirir.
+
+Ancak pratikte LiteLLM'in Docker container i\c{c}inden host makineye ba\u{g}lanma sorunlar{\i} ya\c{s}and{\i}. Bu nedenle \texttt{real\_deep\_research.py} ve \texttt{smart\_multilingual\_research.py} dosyalar{\i}nda do\u{g}rudan \texttt{aiohttp} ile API \c{c}a\u{g}r{\i}lar{\i} yap{\i}ld{\i}. LiteLLM sadece \texttt{llms.py} yard{\i}mc{\i} mod\"{u}l\"{u}nde kald{\i}.
+
+\textbf{Sonu\c{c}:} K{\i}smen do\u{g}ru. LiteLLM abstraksiyonu yararl{\i} ama Docker networking sorunlar{\i} nedeniyle by-pass edildi.
+
+\subsection{Karar 3: Google + DuckDuckGo + Tavily Hibrit Arama}
+
+\textbf{Alternatifler:}
+\begin{itemize}
+  \item Sadece Tavily API
+  \item Sadece Google Custom Search API
+  \item Sadece DuckDuckGo
+  \item Bing Search API
+  \item SerpAPI
+\end{itemize}
+
+\textbf{Se\c{c}im:} Google \"{o}ncelikli, DuckDuckGo fallback, Tavily backup
+
+\textbf{Gerek\c{c}e:} Tek bir arama motoruna ba\u{g}{\i}ml{\i}l{\i}k risklidir --- rate limiting, API de\u{g}i\c{s}ikli\u{g}i veya servis kesintisi olabilir. \"{U}\c{c}l\"{u} fallback chain: Google $\rightarrow$ DuckDuckGo $\rightarrow$ Tavily, \%99.9 uptime sa\u{g}lar.
+
+Google, en kapsaml{\i} index'e sahiptir. DuckDuckGo, API key gerektirmez. Tavily, AI-optimize edilmi\c{s} sonu\c{c}lar \"{u}retir.
+
+\textbf{Sonu\c{c}:} M\"{u}kemmel karar. Pratikte Google rate limiting'e tak{\i}ld{\i}\u{g}{\i}nda DuckDuckGo devreye girerek ara\c{s}t{\i}rmay{\i} kurtard{\i}.
+
+\subsection{Karar 4: LLM-as-a-Judge Kaynak De\u{g}erlendirmesi}
+
+\textbf{Alternatifler:}
+\begin{itemize}
+  \item Sabit domain listesi (whitelist/blacklist)
+  \item Makine \"{o}\u{g}renmesi s{\i}n{\i}fland{\i}r{\i}c{\i}s{\i}
+  \item PageRank benzeri algoritmik skor
+  \item Kullan{\i}c{\i} oylamas{\i}
+\end{itemize}
+
+\textbf{Se\c{c}im:} LLM-as-a-judge + domain listesi hibrit
+
+\textbf{Gerek\c{c}e:} Sabit domain listesi yeni kaynaklar{\i} de\u{g}erlendiremez. ML s{\i}n{\i}fland{\i}r{\i}c{\i}s{\i} e\u{g}itim verisi gerektirir. LLM, i\c{c}eri\u{g}in \textit{anlam{\i}n{\i}} de\u{g}erlendirebilir --- tarihi yaz{\i}lm{\i}\c{s} teknoloji makalesi eski olabilir, ama tarih makalesi i\c{c}in tarih \"{o}nemli de\u{g}ildir.
+
+Hibrit yakla\c{s}{\i}m: \"{o}nce domain listesiyle h{\i}zl{\i} filtreleme (O(1)), sonra LLM ile derin de\u{g}erlendirme. Bu iki a\c{s}amal{\i} yap{\i}, hem h{\i}z hem doğruluk sa\u{g}lar.
+
+\textbf{Sonu\c{c}:} \.{I}yi karar. Ancak LLM de\u{g}erlendirmesi her kaynak i\c{c}in ek bir API \c{c}a\u{g}r{\i}s{\i} gerektirdi\u{g}inden ara\c{s}t{\i}rma s\"{u}resini \%30--40 uzatt{\i}.
+
+\subsection{Karar 5: Docker Container Deployment}
+
+\textbf{Gerek\c{c}e:} Cross-platform uyumluluk (Windows, macOS, Linux) tek Dockerfile ile sa\u{g}lan{\i}r. Ba\u{g}{\i}ml{\i}l{\i}k \c{c}at{\i}\c{s}malar{\i} ortadan kalkar.
+
+\textbf{Zorluk:} Docker container'dan host makinedeki Ollama/LM~Studio'ya eri\c{s}im. \texttt{host.docker.internal} DNS \c{c}\"{o}z\"{u}mlemesi macOS'ta \c{c}al{\i}\c{s}{\i}r ama Linux'ta ek yap{\i}land{\i}rma gerektirir. Bu nedenle \"{u}\c{c}l\"{u} fallback: \texttt{host.docker.internal} $\rightarrow$ \texttt{192.168.65.1} $\rightarrow$ \texttt{172.17.0.1} $\rightarrow$ \texttt{localhost}.
+
+\section{Ne \.{I}\c{s}e Yarad{\i}?}
+
+\begin{enumerate}
+  \item \textbf{WebSocket streaming:} Kullan{\i}c{\i} deneyimini dramatik \c{s}ekilde iyile\c{s}tirdi. Ara\c{s}t{\i}rma s\"{u}recini canl{\i} takip etmek g\"{u}ven verdi.
+  \item \textbf{\c{C}ok dilli arama:} T\"{u}rk\c{c}e soru soruldu\u{g}unda hem T\"{u}rk\c{c}e hem \.{I}ngilizce arama yapmak bilgi kalitesini art{\i}rd{\i}.
+  \item \textbf{Fallback chain'ler:} Hem arama motor\"{u} hem LLM provider i\c{c}in \c{c}oklu fallback, sistemin robust olmas{\i}n{\i} sa\u{g}lad{\i}.
+  \item \textbf{Progress tracking:} 0.0'dan 1.0'a detayl{\i} ilerleme bildirimi.
+  \item \textbf{Kaynak kaydetme:} Ara\c{s}t{\i}rma raporunu dosyaya kaydetme, kullan{\i}c{\i}ya kal{\i}c{\i} de\u{g}er sa\u{g}lad{\i}.
+\end{enumerate}
+
+\section{Ne Yaramad{\i}?}
+
+\begin{enumerate}
+  \item \textbf{LiteLLM Docker entegrasyonu:} Host networking sorunlar{\i} nedeniyle by-pass edildi.
+  \item \textbf{Senkron Google search:} \texttt{googlesearch} k\"{u}t\"{u}phanesi senkron oldu\u{g}u i\c{c}in ThreadPoolExecutor ile sar{\i}lmak gerekti.
+  \item \textbf{Content truncation:} 3000--4000 karakter limiti uzun makalelerde bilgi kayb{\i}na neden oldu.
+  \item \textbf{Tek seferde rapor \"{u}retimi:} Final rapor i\c{c}in tek bir LLM \c{c}a\u{g}r{\i}s{\i} yap{\i}ld{\i}; b\"{o}l\"{u}m b\"{o}l\"{u}m \"{u}retim daha kaliteli olabilirdi.
+\end{enumerate}
+
+\section{Gelecekte Ne Yap{\i}labilir?}
+
+\begin{enumerate}
+  \item \textbf{RAG entegrasyonu:} Ara\c{s}t{\i}rma sonu\c{c}lar{\i}n{\i} vekt\"{o}r veritaban{\i}nda saklayarak ge\c{c}mi\c{s} ara\c{s}t{\i}rmalardan \"{o}\u{g}renme.
+  \item \textbf{Multi-agent orchestration:} Farkl{\i} alt konular{\i} paralel olarak ara\c{s}t{\i}ran agent'lar.
+  \item \textbf{Streaming rapor:} Raporu b\"{o}l\"{u}m b\"{o}l\"{u}m \"{u}retip anl{\i}k g\"{o}sterme.
+  \item \textbf{Citation verification:} \"{U}retilen raporun kaynaklar{\i}n{\i} do\u{g}rulama.
+  \item \textbf{Kullan{\i}c{\i} feedback loop:} Kullan{\i}c{\i}n{\i}n ``daha fazla bilgi'' veya ``bu a\c{c}{\i}dan bak'' diyerek y\"{o}nlendirmesi.
+  \item \textbf{G\"{o}rsel \"{u}retim:} Mermaid diyagramlar{\i}, tablolar, grafikler ile zenginle\c{s}tirilmi\c{s} raporlar.
+\end{enumerate}
+
+\begin{ozet}
+LocoDex Deep Search'in tasar{\i}m kararlar{\i}, local-first felsefesi \"{u}zerine kurulmu\c{s}tur. FastAPI + WebSocket, hibrit arama, LLM-as-a-judge g\"{u}venilirlik ve Docker deployment temel ta\c{s}lar{\i}d{\i}r. LiteLLM Docker entegrasyonu ve senkron arama k\"{u}t\"{u}phaneleri sorun yaratt{\i}. Gelecekte RAG, multi-agent ve streaming rapor \"{o}zellikleri eklenebilir.
+\end{ozet}

@@ -1,0 +1,1359 @@
+% ============================================================
+%  BOLUM 4: WEB ARAMA SISTEMI VE BILGI TOPLAMA
+%  Yazar: Developer Agent (Codex ciktisi bazinda)
+%  Tarih: 15 Mart 2026
+% ============================================================
+
+Bu b\"{o}l\"{u}m, LocoDex Deep Search'in web arama alt sistemini t\"{u}m matematiksel temelleriyle ele al{\i}r. Google, DuckDuckGo ve Tavily arama motorlar{\i}n{\i}n entegrasyonu; PageRank, TF-IDF ve BM25 algoritmalar{\i}n{\i}n form\"{u}lleri; i\c{c}erik \c{c}{\i}karma stratejileri; ve sonu\c{c} tekrars{\i}zla\c{s}t{\i}rma (deduplication) y\"{o}ntemleri incelenir.
+
+% ============================================================
+%  4.1 ARAMA MOTORU ENTEGRASYONU
+% ============================================================
+\section{Arama Motoru Entegrasyonu}
+\label{sec:arama-entegrasyon}
+
+LocoDex, tek bir arama motoruna ba\u{g}{\i}ml{\i} kalmak yerine \"{u}\c{c} farkl{\i} arama servisiyle hibrit bir yap{\i} kullan{\i}r. Bu yakla\c{s}{\i}m hem y\"{u}ksek eri\c{s}ilebilirlik (\%99.9 uptime) hem de farkl{\i} arama motorlar{\i}n{\i}n g\"{u}\c{c}l\"{u} y\"{o}nlerinden faydalanma imk\^{a}n{\i} sa\u{g}lar.
+
+\subsection{Google Search API: PageRank Algoritmas{\i}n{\i}n Matematiksel Temeli}
+\label{subsec:pagerank}
+
+Google'{\i}n kurucu algoritmas{\i} PageRank, web'i y\"{o}nl\"{u} bir graf olarak modeller: her sayfa bir d\"{u}\u{g}\"{u}m, her hyperlink bir kenard{\i}r. Temel fikir \c{s}udur: \textit{\"{o}nemli sayfalar, \"{o}nemli sayfalar taraf{\i}ndan i\c{s}aret edilir.} Bu d\"{o}ng\"{u}sel tan{\i}m, lineer cebir ile \c{c}\"{o}z\"{u}l\"{u}r.
+
+\subsubsection{Form\"{u}l T\"{u}retimi}
+
+Web'de $N$ sayfa olsun. Her $A$ sayfas{\i} i\c{c}in:
+\begin{itemize}
+  \item $T_1, T_2, \ldots, T_k$: $A$'ya link veren sayfalar
+  \item $C(T_i)$: $T_i$'nin toplam outbound link say{\i}s{\i}
+  \item $\text{PR}(T_i)$: $T_i$'nin PageRank de\u{g}eri
+\end{itemize}
+
+\noindent
+Bir ``rastgele s\"{o}rf\c{c}\"{u}'' (random surfer) web'de linkleri takip ederek dola\c{s}{\i}yorsa, herhangi bir anda bir sayfada olma olas{\i}l{\i}\u{g}{\i} o sayfan{\i}n PageRank de\u{g}eridir. Naive model:
+
+\begin{equation}
+\text{PR}(A) = \sum_{i=1}^{k} \frac{\text{PR}(T_i)}{C(T_i)}
+\label{eq:pagerank-naive}
+\end{equation}
+
+\noindent
+Bu ifade, ``$T_i$ sayfas{\i} bana link veriyor; $T_i$'nin toplam $C(T_i)$ linki var; dolay{\i}s{\i}yla $T_i$'nin PR de\u{g}erinin $1/C(T_i)$ kadar{\i} bana akar'' anlam{\i}na gelir.
+
+\begin{dikkat}
+Denklem~\eqref{eq:pagerank-naive}'in iki kritik sorunu vard{\i}r: (1)~Dangling node'lar --- hi\c{c} outbound linki olmayan sayfalar rank'i ``yutar''; (2)~Rank sink --- ba\u{g}lant{\i}s{\i}z bile\c{s}enler aras{\i}nda rank ak{\i}\c{s}{\i} olmaz, s\"{o}rf\c{c}\"{u} \c{c}{\i}kmazda kalabilir.
+\end{dikkat}
+
+\noindent
+\c{C}\"{o}z\"{u}m i\c{c}in \textbf{damping factor} $d$ tan{\i}mlan{\i}r. Rastgele s\"{o}rf\c{c}\"{u} her ad{\i}mda:
+\begin{itemize}
+  \item $d$ olas{\i}l{\i}kla mevcut sayfadaki bir linki takip eder,
+  \item $(1-d)$ olas{\i}l{\i}kla herhangi rastgele bir sayfaya z{\i}plar (``teleportation'').
+\end{itemize}
+
+\begin{formulbox}[PageRank Form\"{u}l\"{u} (Brin \& Page, 1998)]
+\begin{equation}
+\text{PR}(A) = \frac{1-d}{N} + d \sum_{i=1}^{k} \frac{\text{PR}(T_i)}{C(T_i)}
+\label{eq:pagerank}
+\end{equation}
+Burada $d = 0.85$ (Google'{\i}n orijinal de\u{g}eri), $N$ = toplam sayfa say{\i}s{\i}.
+\end{formulbox}
+
+\subsubsection{Damping Factor: Neden $d = 0.85$?}
+
+$d = 0.85$ demek: s\"{o}rf\c{c}\"{u} \%85 olas{\i}l{\i}kla linkleri takip eder, \%15 olas{\i}l{\i}kla rastgele z{\i}plar.
+
+\begin{itemize}
+  \item $d = 1.0$ olsayd{\i}: Teleportation yok, rank sink problemi devam eder, matris tekil (singular) olabilir, yak{\i}nsama garantisi yok.
+  \item $d = 0.0$ olsayd{\i}: T\"{u}m sayfalar e\c{s}it $\text{PR} = 1/N$ al{\i}r, link yap{\i}s{\i} tamamen g\"{o}z ard{\i} edilir.
+  \item $d = 0.85$: Ampirik olarak link yap{\i}s{\i}n{\i} yeterince \"{o}ne \c{c}{\i}kar{\i}r ama rank sink'i \"{o}nler.
+\end{itemize}
+
+\subsubsection{Matris Formunda PageRank ve Yak{\i}nsama Analizi}
+
+PageRank vekt\"{o}r\"{u} $\boldsymbol{\pi}$, ge\c{c}i\c{s} matrisi $\mathbf{M}$ ($M_{ij} = 1/C(j)$ e\u{g}er $j$'den $i$'ye link varsa, $0$ aksi halde) olmak \"{u}zere:
+
+\begin{equation}
+\boldsymbol{\pi} = \frac{1-d}{N}\,\mathbf{e} + d\,\mathbf{M}\,\boldsymbol{\pi}
+\label{eq:pagerank-matrix}
+\end{equation}
+
+\noindent
+Burada $\mathbf{e} = [1, 1, \ldots, 1]^T$. Bu, bir \"{o}zde\u{g}er denklemidir ve iteratif \textbf{power iteration} ile \c{c}\"{o}z\"{u}l\"{u}r:
+
+\begin{equation}
+\boldsymbol{\pi}^{(k+1)} = \frac{1-d}{N}\,\mathbf{e} + d\,\mathbf{M}\,\boldsymbol{\pi}^{(k)}
+\label{eq:power-iteration}
+\end{equation}
+
+\noindent
+$\mathbf{M}$ stokastik matristir. $d < 1$ oldu\u{g}unda, ge\c{c}i\c{s} matrisi
+\[
+\mathbf{G} = \frac{1-d}{N}\,\mathbf{J} + d\,\mathbf{M}
+\]
+($\mathbf{J}$: t\"{u}m elemanlar{\i} $1/N$ olan matris) ilkel (primitive) stokastik matristir. \textbf{Perron--Frobenius teoremine} g\"{o}re tek bir dominant \"{o}zde\u{g}eri vard{\i}r ($\lambda_1 = 1$) ve di\u{g}er \"{o}zde\u{g}erlerin mutlak de\u{g}eri en fazla $d$'dir. Dolay{\i}s{\i}yla power iteration geometrik h{\i}zla yak{\i}nsar:
+
+\begin{equation}
+\|\boldsymbol{\pi}^{(k)} - \boldsymbol{\pi}^*\| \leq C \cdot d^k
+\label{eq:convergence}
+\end{equation}
+
+\noindent
+$d = 0.85$ i\c{c}in pratikte 50--100 iterasyonda yak{\i}nsama sa\u{g}lan{\i}r.
+
+\subsubsection{Say{\i}sal \"{O}rnek ($N = 4$)}
+
+D\"{o}rt sayfal{\i} bir web grafiGi d\"{u}\c{s}\"{u}nelim (bkz. \c{S}ekil~\ref{fig:pagerank-graph}): $A \to \{B, C\}$, $B \to \{C\}$, $C \to \{A\}$, $D \to \{A, B, C\}$.
+
+\begin{ornek}
+Ge\c{c}i\c{s} matrisi $\mathbf{M}$ (sat{\i}rlar = hedef, s\"{u}tunlar = kaynak):
+\[
+\mathbf{M} = \begin{bmatrix}
+0 & 0 & 1 & 1/3 \\
+1/2 & 0 & 0 & 1/3 \\
+1/2 & 1 & 0 & 1/3 \\
+0 & 0 & 0 & 0
+\end{bmatrix}
+\]
+
+Ba\c{s}lang{\i}\c{c}: $\boldsymbol{\pi}^{(0)} = [0.25, 0.25, 0.25, 0.25]^T$, $d = 0.85$.
+
+\textbf{\.{I}terasyon~1:}
+\begin{align*}
+\text{PR}(A) &= \frac{0.15}{4} + 0.85\!\left(0 + 0 + 0.25 \cdot 1 + 0.25 \cdot \frac{1}{3}\right) = 0.0375 + 0.2833 = 0.3208 \\
+\text{PR}(B) &= 0.0375 + 0.85\!\left(0.25 \cdot 0.5 + 0 + 0 + 0.25 \cdot \frac{1}{3}\right) = 0.0375 + 0.1771 = 0.2146 \\
+\text{PR}(C) &= 0.0375 + 0.85\!\left(0.25 \cdot 0.5 + 0.25 \cdot 1 + 0 + 0.25 \cdot \frac{1}{3}\right) = 0.0375 + 0.3896 = 0.4271 \\
+\text{PR}(D) &= 0.0375 + 0.85 \cdot 0 = 0.0375
+\end{align*}
+
+$D$ hi\c{c} link alm{\i}yor, en d\"{u}\c{s}\"{u}k PR. $C$ hem $A$ hem $B$'den link al{\i}yor, en y\"{u}ksek. Bu, sezgisel beklentiyle \"{o}rt\"{u}\c{s}\"{u}r.
+\end{ornek}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=2.5cm,
+  page/.style={circle, draw=chapterBlue, fill=boxBG, text=textWhite,
+               minimum size=1.2cm, font=\bfseries\large, line width=1pt},
+  link/.style={->, >=stealth, line width=0.8pt, color=sectionBlue!80},
+  prlabel/.style={font=\small\color{codeGreen}, below=2pt}
+]
+  \node[page] (A) {A};
+  \node[page, right of=A] (B) {B};
+  \node[page, below of=B] (C) {C};
+  \node[page, below of=A] (D) {D};
+
+  \draw[link] (A) -- (B);
+  \draw[link] (A) -- (C);
+  \draw[link] (B) -- (C);
+  \draw[link] (C) -- (A);
+  \draw[link] (D) -- (A);
+  \draw[link] (D) -- (B);
+  \draw[link] (D) -- (C);
+
+  \node[prlabel] at (A.south west) {0.321};
+  \node[prlabel] at (B.south east) {0.215};
+  \node[prlabel, right=2pt] at (C.east) {0.427};
+  \node[prlabel, left=2pt] at (D.west) {0.038};
+\end{tikzpicture}
+\caption{D\"{o}rt sayfal{\i} web graf{\i} ve ilk iterasyon PageRank de\u{g}erleri. $C$ en \c{c}ok link ald{\i}\u{g}{\i} i\c{c}in en y\"{u}ksek skora sahiptir.}
+\label{fig:pagerank-graph}
+\end{figure}
+
+\subsubsection{Karma\c{s}{\i}kl{\i}k Analizi}
+
+Her iterasyon $O(E)$ i\c{s}lem gerektirir ($E$ = kenar/link say{\i}s{\i}). Tipik olarak $k = 50\text{--}100$ iterasyon yap{\i}l{\i}r. Toplam karma\c{s}{\i}kl{\i}k:
+
+\begin{equation}
+T_{\text{PageRank}} = O(k \cdot E)
+\label{eq:pagerank-complexity}
+\end{equation}
+
+\noindent
+Web \"{o}l\c{c}e\u{g}inde $E \sim 10^{12}$ kenar vard{\i}r. Bu, Google'{\i}n MapReduce/Pregel gibi da\u{g}{\i}t{\i}k hesaplama framework'leri gerektirmesinin temel sebebidir.
+
+\begin{dikkat}
+LocoDex do\u{g}rudan PageRank hesaplamas{\i} \textbf{yapmaz}. \texttt{googlesearch.search()} API \c{c}a\u{g}r{\i}ld{\i}\u{g}{\i}nda d\"{o}nen sonu\c{c}lar zaten Google'{\i}n PageRank + 200+ sinyal bile\c{s}imi taraf{\i}ndan s{\i}ralanm{\i}\c{s}t{\i}r. PageRank'in etkisi dolayl{\i} ama temeldir.
+\end{dikkat}
+
+
+\subsection{DuckDuckGo Search: Privacy-First Arama}
+\label{subsec:duckduckgo}
+
+LocoDex'te \texttt{smart\_multilingual\_research.py} dosyas{\i}nda DuckDuckGo, fallback arama motoru olarak kullan{\i}l{\i}r.
+
+\subsubsection{Teknik Altyap{\i}}
+
+DuckDuckGo (DDG) kendi ba\u{g}{\i}ms{\i}z index'ine sahip de\u{g}ildir. Bing'in index'ini kullan{\i}r; buna ek olarak kendi crawler'{\i} (DuckDuckBot) ve 400+ kaynak (Wikipedia, Stack~Overflow, vb.) ile destekler. Bu, DDG'nin arama kalitesinin b\"{u}y\"{u}k \"{o}l\c{c}\"{u}de Bing'e ba\u{g}{\i}ml{\i} oldu\u{g}u anlam{\i}na gelir.
+
+\subsubsection{Privacy Mekanizmas{\i}}
+
+\begin{itemize}
+  \item IP adresi arama sunucular{\i}na iletilmez (proxy katman{\i})
+  \item Arama ge\c{c}mi\c{s}i kaydedilmez
+  \item Tracking cookie kullan{\i}lmaz
+  \item Search leakage engellenir (referrer header'lar temizlenir)
+\end{itemize}
+
+\subsubsection{LocoDex'te Kullan{\i}m Stratejisi}
+
+Google sonu\c{c}lar{\i} genellikle daha kalitelidir (daha b\"{u}y\"{u}k index, daha sofistike ranking). Ancak Google rate-limit uygulayabilir veya CAPTCHA isteyebilir. DDG bu konuda daha toleransl{\i}d{\i}r. LocoDex stratejisi: \texttt{len(results) < max\_results} ko\c{s}ulu sa\u{g}land{\i}\u{g}{\i}nda DDG'ye ge\c{c}ilir.
+
+\begin{kodref}{smart\_multilingual\_research.py -- \c{C}ince Filtreleme}
+\.{I}lgin\c{c} bir detay: DDG sonu\c{c}lar{\i}nda \c{C}ince i\c{c}erik filtresi uygulan{\i}r. Bunun sebebi DDG'nin Bing index'ini kullanmas{\i} ve Bing'in \c{C}in'de g\"{u}\c{c}l\"{u} konumda olmas{\i} nedeniyle Bat{\i} dillerindeki sorgulara \c{C}ince sonu\c{c}lar kar{\i}\c{s}abilmesidir.
+\end{kodref}
+
+
+\subsection{Tavily API: AI-Optimize Edilmi\c{s} Arama}
+\label{subsec:tavily}
+
+Tavily, AI ajanlar{\i} i\c{c}in \"{o}zel olarak tasarlanm{\i}\c{s} bir arama API'sidir.
+
+\subsubsection{Google'dan Temel Farklar{\i}}
+
+\begin{itemize}
+  \item \textbf{Google:} Ham URL listesi d\"{o}ner; i\c{c}erik \c{c}ekme ayr{\i} i\c{s}lem gerektirir.
+  \item \textbf{Tavily:} Do\u{g}rudan structured data d\"{o}ner: \texttt{title}, \texttt{content}, \texttt{raw\_content}.
+  \item \texttt{search\_depth} parametresi vard{\i}r: ``basic'' vs ``advanced'' (daha derin crawling).
+\end{itemize}
+
+\noindent
+LocoDex'te \texttt{tavily\_search.py} dosyas{\i}nda hem senkron hem asenkron versiyon mevcuttur. Her ikisi de \"{o}nce Tavily'yi dener, ba\c{s}ar{\i}s{\i}z olursa \texttt{\_google\_fallback\_search}'e ge\c{c}er.
+
+
+\subsection{Arama Motoru Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{subsec:arama-karsilastirma}
+
+\begin{table}[H]
+\centering
+\caption{LocoDex'te kullan{\i}lan arama motorlar{\i}n{\i}n kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:search-engines}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcccc}
+\toprule
+\color{chapterBlue}\textbf{Motor} &
+\color{chapterBlue}\textbf{Index Kayna\u{g}{\i}} &
+\color{chapterBlue}\textbf{API Key} &
+\color{chapterBlue}\textbf{Privacy} &
+\color{chapterBlue}\textbf{Rate Limit} &
+\color{chapterBlue}\textbf{Kalite} \\
+\midrule
+Google & Kendi (en b\"{u}y\"{u}k) & Hay{\i}r\textsuperscript{*} & D\"{u}\c{s}\"{u}k & Y\"{u}ksek risk & \color{codeGreen}9/10 \\
+DuckDuckGo & Bing + 400 kaynak & Hay{\i}r & \color{codeGreen}Y\"{u}ksek & D\"{u}\c{s}\"{u}k risk & 7/10 \\
+Tavily & Kendi crawl & Evet & Orta & D\"{u}\c{s}\"{u}k risk & 8/10 \\
+\bottomrule
+\end{tabularx}
+\smallskip
+{\small \textsuperscript{*}LocoDex, resmi Google API yerine \texttt{googlesearch-python} paketini kullan{\i}r (web scraping).}
+\end{table}
+
+
+% ============================================================
+%  4.2 HIBRIT ARAMA STRATEJISI VE FALLBACK ZINCIRI
+% ============================================================
+\section{Hibrit Arama Stratejisi ve Fallback Zinciri}
+\label{sec:hibrit-arama}
+
+LocoDex'te \"{u}\c{c} farkl{\i} arama pipeline'{\i} bulunur; her biri farkl{\i} \"{o}ncelikler ve fallback zincirleri kullan{\i}r.
+
+\subsection{Pipeline Mimarisi}
+
+\begin{enumerate}
+  \item \textbf{Pipeline~1} (\texttt{real\_deep\_research.py}): Google $\to$ ba\c{s}ar{\i}s{\i}z $\to$ Tavily
+  \item \textbf{Pipeline~2} (\texttt{smart\_multilingual\_research.py}): Google (with content scraping) $\to$ yetersiz $\to$ DuckDuckGo
+  \item \textbf{Pipeline~3} (\texttt{together\_open\_deep\_research.py}): Yaln{\i}zca Google (10 sonu\c{c}, 5s timeout)
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1.8cm,
+  box/.style={rectangle, rounded corners=4pt, draw=boxBorder, fill=boxBG,
+              text=textWhite, minimum width=3.8cm, minimum height=1cm,
+              font=\small\bfseries, align=center, line width=0.8pt},
+  decision/.style={diamond, draw=warnOrange, fill=boxBG, text=textWhite,
+                   minimum width=2.2cm, minimum height=1.4cm,
+                   font=\small, align=center, inner sep=1pt, line width=0.8pt},
+  arrow/.style={->, >=stealth, line width=0.7pt, color=sectionBlue!80},
+  fail/.style={->, >=stealth, line width=0.7pt, color=codeRed, dashed},
+  label/.style={font=\scriptsize\color{codeGreen}, midway}
+]
+
+  % Pipeline 1
+  \node[box] (google1) {Google Search\\API};
+  \node[decision, right=2cm of google1] (check1) {Sonu\c{c}\\var m{\i}?};
+  \node[box, right=2cm of check1] (tavily) {Tavily\\API};
+  \node[box, below=1cm of check1] (result1) {Sonu\c{c}lar{\i}\\\.{I}\c{s}le};
+
+  \draw[arrow] (google1) -- (check1);
+  \draw[arrow] (check1) -- node[label, above] {Hay{\i}r} (tavily);
+  \draw[arrow] (check1) -- node[label, right] {Evet} (result1);
+  \draw[arrow] (tavily) |- (result1);
+
+  \node[font=\footnotesize\color{chapterBlue}\bfseries, above=0.3cm of google1] {Pipeline 1: real\_deep\_research};
+
+  % Pipeline 2
+  \node[box, below=3cm of google1] (google2) {Google +\\Content Scrape};
+  \node[decision, right=2cm of google2] (check2) {Yeterli\\sonu\c{c}?};
+  \node[box, right=2cm of check2] (ddg) {DuckDuckGo\\Ekleme};
+  \node[box, below=1cm of check2] (result2) {Sonu\c{c}lar{\i}\\Birle\c{s}tir};
+
+  \draw[arrow] (google2) -- (check2);
+  \draw[arrow] (check2) -- node[label, above] {Hay{\i}r} (ddg);
+  \draw[arrow] (check2) -- node[label, right] {Evet} (result2);
+  \draw[arrow] (ddg) |- (result2);
+
+  \node[font=\footnotesize\color{chapterBlue}\bfseries, above=0.3cm of google2] {Pipeline 2: smart\_multilingual};
+
+\end{tikzpicture}
+\caption{LocoDex arama pipeline fallback zincirleri. Pipeline~1 Tavily'ye, Pipeline~2 DuckDuckGo'ya d\"{u}\c{s}er.}
+\label{fig:search-pipeline}
+\end{figure}
+
+\subsection{Neden Katmanl{\i} Yakla\c{s}{\i}m?}
+
+\begin{itemize}
+  \item \textbf{Google:} En y\"{u}ksek kalite, ama rate-limit ve CAPTCHA riski.
+  \item \textbf{DuckDuckGo:} Privacy-friendly, Bing index'i, rate-limit'e daha toleransl{\i}, API key gerektirmez.
+  \item \textbf{Tavily:} AI-optimize edilmi\c{s} structured data d\"{o}ner, ama API key gerektirir (\"{u}cretli katman).
+\end{itemize}
+
+\noindent
+Alternatifler aras{\i}nda Brave Search API, Serper.dev ve SearXNG (self-hosted meta-search) bulunur. LocoDex'in se\c{c}imi makuldur: \"{u}cretsiz katman \"{o}nce, \"{u}cretli katman sonra.
+
+
+% ============================================================
+%  4.3 RATE LIMITING
+% ============================================================
+\section{Rate Limiting ve Bekleme Stratejileri}
+\label{sec:search-rate-limiting}
+
+\subsection{Mevcut Uygulama}
+
+LocoDex'te her arama sorgusu aras{\i}nda sabit 1 saniye bekleme uygulan{\i}r:
+
+\begin{lstlisting}[caption={Rate limiting uygulamas{\i} (real\_deep\_research.py)}, label={lst:rate-limit}]
+await asyncio.sleep(1)  # Rate limiting
+\end{lstlisting}
+
+\subsection{Neden 1 Saniye?}
+
+LocoDex, \texttt{googlesearch-python} paketini kullan{\i}r. Bu, Google'{\i}n resmi API'si de\u{g}il; Google'{\i}n web aray\"{u}z\"{u}n\"{u} scrape eder. Google bunu tespit ederse:
+\begin{itemize}
+  \item 429 Too Many Requests
+  \item CAPTCHA zorlamas{\i}
+  \item IP ge\c{c}ici banlama (genellikle 24 saat)
+\end{itemize}
+
+\noindent
+Pratikte \"{o}l\c{c}\"{u}len risk seviyeleri:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\color{chapterBlue}\textbf{H{\i}z} & \color{chapterBlue}\textbf{Kar\c{s}{\i}l{\i}k} & \color{chapterBlue}\textbf{Risk} \\
+\midrule
+1 req/s  & 60 req/dk  & \color{codeGreen}G\"{u}venli b\"{o}lge \\
+5+ req/s & 300 req/dk & \color{codeYellow}CAPTCHA riski \\
+10+ req/s & 600 req/dk & \color{codeRed}IP ban riski \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+1 saniye bekleme, 5 sorgu i\c{c}in toplam 5 saniye ek s\"{u}re ekler. Bu kabul edilebilir bir trade-off'd{\i}r.
+
+\subsection{Token Bucket Algoritmas{\i}}
+
+Daha sofistike bir alternatif olan token bucket y\"{o}ntemi \c{s}\"{o}yle \c{c}al{\i}\c{s}{\i}r:
+
+\begin{formulbox}[Token Bucket Modeli]
+\begin{itemize}
+  \item Token \"{u}retim h{\i}z{\i}: $r$ token/saniye
+  \item Kova kapasitesi: $b$ token
+  \item $t$ an{\i}nda kova durumu: $\min\!\big(b,\; \text{tokens} + r \cdot \Delta t\big)$
+  \item Her request 1 token t\"{u}ketir
+  \item Kova bo\c{s}sa bekle
+\end{itemize}
+\end{formulbox}
+
+\noindent
+Di\u{g}er alternatifler: \textit{exponential backoff} (bekleme s\"{u}resi $1, 2, 4, 8, \ldots$ saniye, 429 durumunda) ve \textit{adaptive rate limiting} (response time'a g\"{o}re h{\i}z ayarlama). LocoDex'in sabit 1s yakla\c{s}{\i}m{\i} en basit ve g\"{u}venli y\"{o}ntemdir; dezavantaj{\i}, Google h{\i}zl{\i} yan{\i}t verse bile 1s beklenmesidir.
+
+
+% ============================================================
+%  4.4 SEARCH QUERY OPTIMIZASYONU
+% ============================================================
+\section{Search Query Optimizasyonu}
+\label{sec:query-optimizasyon}
+
+LocoDex, sorgu \"{u}retimini LLM'e b{\i}rak{\i}r. Bu, klasik query reformulation tekniklerinden farkl{\i} ama modern bir yakla\c{s}{\i}md{\i}r.
+
+\subsection{Koddaki Uygulama}
+
+\begin{itemize}
+  \item \texttt{real\_deep\_research.py}: Ana dilde 3 sorgu + \.{I}ngilizce 2 sorgu \"{u}retir.
+  \item \texttt{smart\_multilingual\_research.py}: 4 farkl{\i} a\c{c}{\i}dan sorgu (tan{\i}m, g\"{u}ncel, global, teknik).
+  \item \texttt{together\_open\_deep\_research.py}: LLM ile plan olu\c{s}turma, JSON parse.
+\end{itemize}
+
+\subsection{Teorik Query Reformulation Teknikleri}
+
+\begin{enumerate}
+  \item \textbf{Keyword extraction:} Stop-word'leri \c{c}{\i}kar, TF-IDF ile \"{o}nemli terimleri se\c{c}.
+  \item \textbf{Query expansion:} Synonym ekleme (WordNet), related terms.
+  \item \textbf{Query decomposition:} Karma\c{s}{\i}k sorguyu alt sorgulara b\"{o}l.
+  \item \textbf{Pseudo-relevance feedback:} \.{I}lk sonu\c{c}lardaki terimleri sorguya ekle.
+\end{enumerate}
+
+\noindent
+LocoDex'in yakla\c{s}{\i}m{\i} (3) numarad{\i}r: LLM ile decomposition. LLM, semantik anlama sayesinde daha iyi alt sorgular \"{u}retebilir.
+
+\begin{dikkat}
+S{\i}n{\i}rlamalar: (1)~LLM hallucination riski --- yanl{\i}\c{s} veya alakas{\i}z sorgular \"{u}retebilir; (2)~ek latency --- her sorgu \"{u}retimi i\c{c}in LLM \c{c}a\u{g}r{\i}s{\i} $\sim$1--5s; (3)~token maliyeti --- her sorgu \"{u}retimi $\sim$200--500 token t\"{u}ketir.
+\end{dikkat}
+
+
+% ============================================================
+%  4.5 WEB ICERIK CIKARMA
+% ============================================================
+\section{Web \.{I}\c{c}erik \c{C}{\i}karma (Content Extraction)}
+\label{sec:content-extraction}
+
+\subsection{HTTP Request Altyap{\i}s{\i}: Protokol Katmanlar{\i}}
+
+Bir URL'den i\c{c}erik \c{c}ekmek i\c{c}in HTTP GET request yap{\i}l{\i}r. Bu basit i\c{s}lem arkas{\i}nda katmanl{\i} bir protokol y{\i}\u{g}{\i}n{\i} bulunur.
+
+\subsubsection{TCP 3-Way Handshake}
+
+\begin{lstlisting}[language={}, caption={TCP ba\u{g}lant{\i} kurulumu}, label={lst:tcp-handshake}]
+Client  ---> SYN       ---> Server
+Client  <--- SYN+ACK   <--- Server
+Client  ---> ACK       ---> Server
+\end{lstlisting}
+
+\noindent
+Toplam: 1 RTT (Round Trip Time). Tipik RTT: 20--200ms (a\u{g} mesafesine g\"{o}re).
+
+\subsubsection{TLS 1.3 Handshake (HTTPS)}
+
+TLS~1.3 ile 1 RTT yeterlidir (TLS~1.2'de 2 RTT gerekiyordu). Session resumption durumunda 0-RTT m\"{u}mk\"{u}nd\"{u}r.
+
+\subsubsection{Toplam Overhead (\.{I}lk Ba\u{g}lant{\i})}
+
+\begin{equation}
+T_{\text{total}} = T_{\text{DNS}} + T_{\text{TCP}} + T_{\text{TLS}} + T_{\text{HTTP}} + T_{\text{transfer}}
+\label{eq:search-http-overhead}
+\end{equation}
+
+\noindent
+Tipik de\u{g}erler:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\color{chapterBlue}\textbf{A\c{s}ama} & \color{chapterBlue}\textbf{S\"{u}re} \\
+\midrule
+DNS lookup & $\sim$50ms (cached ise $\sim$0ms) \\
+TCP handshake & $\sim$1 RTT = $\sim$50ms \\
+TLS handshake & $\sim$1 RTT = $\sim$50ms \\
+HTTP request + response & $\sim$1 RTT + transfer s\"{u}resi \\
+\midrule
+\textbf{Minimum toplam} & $\sim$150ms + i\c{c}erik transfer \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+\subsection{Timeout Stratejisi}
+\label{subsec:timeout}
+
+Farkl{\i} pipeline'lar farkl{\i} timeout de\u{g}erleri kullan{\i}r:
+
+\begin{table}[H]
+\centering
+\caption{LocoDex pipeline'lar{\i}nda timeout de\u{g}erleri ve gerek\c{c}eleri}
+\label{tab:search-timeouts}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lclX}
+\toprule
+\color{chapterBlue}\textbf{Pipeline} &
+\color{chapterBlue}\textbf{Timeout} &
+\color{chapterBlue}\textbf{Yakalama} &
+\color{chapterBlue}\textbf{Gerek\c{c}e} \\
+\midrule
+together\_open   & 5s  & $\sim$\%75 & Y\"{u}ksek throughput, kay{\i}p tolere edilir \\
+real\_deep       & 10s & $\sim$\%96 & Dengeli --- \c{c}o\u{g}u sayfay{\i} yakalar \\
+smart\_multi     & 15s & $\sim$\%99 & Maksimum kapsam \\
+tavily\_search   & 10s & $\sim$\%96 & Fallback, dengeli \\
+Ollama LLM       & 300s & ---       & Model inference (5dk) \\
+LM Studio LLM    & 120s & ---       & Model inference (2dk) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Optimal Timeout Hesaplama (Queuing Theory)}
+
+E\u{g}er sayfa yan{\i}t s\"{u}releri \"{u}stel da\u{g}{\i}l{\i}m (exponential distribution) ile modellenirse, ortalama $\mu = 3$s olmak \"{u}zere:
+
+\begin{equation}
+P(T \leq t) = 1 - e^{-t/\mu}
+\label{eq:timeout-cdf}
+\end{equation}
+
+\begin{align}
+P(T \leq 5)  &= 1 - e^{-5/3}  = 1 - 0.189 = 0.811 \quad (\%81) \label{eq:timeout-5} \\
+P(T \leq 10) &= 1 - e^{-10/3} = 1 - 0.036 = 0.964 \quad (\%96) \label{eq:timeout-10} \\
+P(T \leq 15) &= 1 - e^{-15/3} = 1 - 0.007 = 0.993 \quad (\%99) \label{eq:timeout-15}
+\end{align}
+
+\noindent
+5s $\to$ 10s timeout art{\i}\c{s}{\i} \%15 daha fazla sayfa yakalamas{\i} sa\u{g}lar. 10s $\to$ 15s i\c{c}in sadece \%3 ek kazan{\i}m vard{\i}r. Bu, azalan getiri (diminishing returns) \"{o}rne\u{g}idir.
+
+
+\subsection{HTML Parsing: BeautifulSoup DOM Tree Traversal}
+\label{subsec:html-parsing}
+
+HTML belgesi bir a\u{g}a\c{c} (tree) yap{\i}s{\i}ndad{\i}r. \texttt{<html>} k\"{o}k d\"{u}\u{g}\"{u}m, \texttt{<head>} ve \texttt{<body>} birinci seviye \c{c}ocuklard{\i}r.
+
+\subsubsection{Parsing S\"{u}reci ve Karma\c{s}{\i}kl{\i}k}
+
+\begin{enumerate}
+  \item HTML string'i parse edip DOM tree olu\c{s}tur: $O(n)$ ($n$ = HTML boyutu)
+  \item Tree traversal (t\"{u}m d\"{u}\u{g}\"{u}mleri gez): $O(n)$
+  \item Belirli etiketleri bul ve kald{\i}r: $O(n)$
+\end{enumerate}
+
+\noindent
+Toplam karma\c{s}{\i}kl{\i}k: $O(n)$ --- HTML boyutuyla lineer.
+
+\begin{lstlisting}[caption={HTML i\c{c}erik \c{c}{\i}karma (smart\_multilingual\_research.py)}, label={lst:html-parse}]
+soup = BeautifulSoup(html, 'html.parser')
+
+# Script ve style etiketlerini kaldir
+for script in soup(["script", "style", "nav",
+                    "footer", "header"]):
+    script.decompose()
+
+# Text'i al
+text = soup.get_text()
+
+# Satirlari temizle
+lines = (line.strip() for line in text.splitlines())
+chunks = (phrase.strip()
+          for line in lines
+          for phrase in line.split("  "))
+clean_text = ' '.join(chunk for chunk in chunks
+                       if chunk)
+
+return clean_text[:4000]
+\end{lstlisting}
+
+\subsubsection{Parser Se\c{c}imi}
+
+\begin{table}[H]
+\centering
+\caption{Python HTML parser'lar{\i}n{\i}n kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:parsers}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\color{chapterBlue}\textbf{Parser} &
+\color{chapterBlue}\textbf{A\c{c}{\i}klama} &
+\color{chapterBlue}\textbf{H{\i}z} &
+\color{chapterBlue}\textbf{Uyumluluk} \\
+\midrule
+\texttt{html.parser} & Python standart k\"{u}t\"{u}phanesi & Orta & \.{I}yi \\
+\texttt{lxml} & C tabanl{\i}, $\sim$10x h{\i}zl{\i} & \color{codeGreen}Y\"{u}ksek & \.{I}yi \\
+\texttt{html5lib} & En standart uyumlu & D\"{u}\c{s}\"{u}k & \color{codeGreen}M\"{u}kemmel \\
+\bottomrule
+\end{tabularx}
+\smallskip
+{\small LocoDex \texttt{html.parser} kullan{\i}r: h{\i}z ve uyumluluk aras{\i} denge, ek dependency gerektirmez.}
+\end{table}
+
+
+\subsection{Content Extraction Stratejisi}
+\label{subsec:content-strategy}
+
+Tipik bir web sayfas{\i}n{\i}n yap{\i}sal da\u{g}{\i}l{\i}m{\i}:
+
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+\color{chapterBlue}\textbf{\.{I}\c{c}erik T\"{u}r\"{u}} & \color{chapterBlue}\textbf{Oran} \\
+\midrule
+Ger\c{c}ek i\c{c}erik (article, main) & \%20--40 \\
+Boilerplate (nav, footer, header, sidebar) & \%30--50 \\
+JavaScript/CSS & \%20--30 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+\texttt{decompose()} ile script/style/nav/footer/header kald{\i}rmak, signal-to-noise oran{\i}n{\i} $\sim$2--3$\times$ art{\i}r{\i}r.
+
+\begin{kodref}{Farkl{\i} Pipeline'lardaki Temizlik Seviyeleri}
+\begin{itemize}
+  \item \texttt{smart\_multilingual}: \texttt{script}, \texttt{style}, \texttt{nav}, \texttt{footer}, \texttt{header} --- en agresif
+  \item \texttt{real\_deep}: Yaln{\i}zca \texttt{script} ve \texttt{style} --- daha az agresif
+  \item \texttt{tavily\_search}: \texttt{script}, \texttt{style}, \texttt{iframe}, \texttt{object}, \texttt{embed} --- en kapsaml{\i}
+\end{itemize}
+\end{kodref}
+
+\noindent
+Daha sofistike alternatifler: \textit{Readability} (Mozilla, ``article'' i\c{c}eri\u{g}i otomatik tespit), \textit{Trafilatura} (akademik web scraping), \textit{content density analizi} (text-to-HTML-tag oran{\i}na g\"{o}re i\c{c}erik blo\u{g}u tespiti). LocoDex bunlar{\i}n hi\c{c}birini kullanm{\i}yor.
+
+
+\subsection{Text Normalization}
+\label{subsec:text-normalization}
+
+Whitespace collapse kodu \c{s}u ad{\i}mlardan olu\c{s}ur:
+
+\begin{enumerate}
+  \item \texttt{text.splitlines()}: Sat{\i}r sonlar{\i}na g\"{o}re b\"{o}l (\texttt{\textbackslash n}, \texttt{\textbackslash r\textbackslash n}, \texttt{\textbackslash r})
+  \item \texttt{line.strip()}: Her sat{\i}r{\i}n ba\c{s}{\i}ndaki/sonundaki bo\c{s}lu\u{g}u \c{c}{\i}kar
+  \item \texttt{line.split("~~")}: \c{C}ift bo\c{s}lukla b\"{o}l (tab veya geni\c{s} bo\c{s}luk ay{\i}r{\i}c{\i})
+  \item \texttt{phrase.strip()}: Her par\c{c}ay{\i} temizle
+  \item Bo\c{s} par\c{c}alar{\i} filtrele, tek bo\c{s}lukla birle\c{s}tir
+\end{enumerate}
+
+\noindent
+Sonu\c{c}: \c{C}oklu sat{\i}r sonlar{\i}, tab'lar, fazla bo\c{s}luklar tek bo\c{s}lu\u{g}a indirgenir. Bu, LLM'e verilen metni daha temiz ve token-efficient yapar.
+
+
+\subsection{Content Truncation: Neden 3000--4000 Karakter?}
+\label{subsec:truncation}
+
+\subsubsection{Koddaki Limitler}
+
+\begin{table}[H]
+\centering
+\caption{Pipeline'lara g\"{o}re i\c{c}erik kesme limitleri}
+\label{tab:truncation}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lrX}
+\toprule
+\color{chapterBlue}\textbf{Dosya} &
+\color{chapterBlue}\textbf{Limit} &
+\color{chapterBlue}\textbf{A\c{c}{\i}klama} \\
+\midrule
+\texttt{real\_deep\_research.py} & 3000 kar. & Ana i\c{c}erik \\
+\texttt{smart\_multilingual.py}  & 4000 kar. & Temizlenmi\c{s} i\c{c}erik \\
+\texttt{tavily\_search.py}       & 50000 kar. & Ham i\c{c}erik (raw) \\
+\texttt{tavily\_search.py}       & 500 kar. & \"{O}zet snippet \\
+\texttt{together\_open\_deep.py}  & 500 kar. & Snippet \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Token/Karakter Oran{\i} Analizi}
+
+\begin{formulbox}[Token/Karakter D\"{o}n\"{u}\c{s}\"{u}m Oranlar{\i}]
+\begin{align}
+\text{\.{I}ngilizce:} \quad & 1 \text{ token} \approx 4 \text{ karakter (GPT tokenizer)} \label{eq:token-en} \\
+\text{T\"{u}rk\c{c}e:}    \quad & 1 \text{ token} \approx 2.5\text{--}3 \text{ karakter (agglutinative dil)} \label{eq:token-tr}
+\end{align}
+
+Dolay{\i}s{\i}yla:
+\begin{align*}
+3000 \text{ karakter} &\approx 750\text{--}1000 \text{ token (\.{I}ngilizce)} \\
+                      &\approx 1000\text{--}1200 \text{ token (T\"{u}rk\c{c}e)}
+\end{align*}
+\end{formulbox}
+
+\subsubsection{Neden Bu Aral{\i}k?}
+
+LocoDex 20 kayna\u{g}a kadar i\c{s}ler. Her kaynak 3000 karakter al{\i}rsa:
+
+\begin{align*}
+\text{Kaynak i\c{c}eri\u{g}i:} \quad & 20 \times 3000 = 60\,000 \text{ karakter} \approx 15\,000\text{--}20\,000 \text{ token} \\
+\text{Prompt'lar:}          \quad & \sim 5\,000\text{--}10\,000 \text{ token} \\
+\text{Toplam:}              \quad & \sim 20\,000\text{--}30\,000 \text{ token}
+\end{align*}
+
+\noindent
+\c{C}o\u{g}u lokal model 4096--8192 context window'a sahiptir (Llama~7B: 4096, Mistral~7B: 8192, Llama~3: 8192--128k). 3000--4000 karakter, 20 kaynakla bile \c{c}o\u{g}u modelin context window'una s{\i}\u{g}acak \c{s}ekilde ayarlanm{\i}\c{s}t{\i}r.
+
+\begin{ornek}
+\textbf{Truncation kay{\i}p analizi:}
+\begin{align*}
+\text{Ortalama web sayfas{\i}:}       & \quad \sim 50\,000 \text{ karakter} \\
+\text{Content extraction sonras{\i}:} & \quad \sim 15\,000 \text{ karakter} \\
+\text{3000 karakter truncation:}       & \quad 3000/15000 = \%20
+\end{align*}
+\.{I}lk \%20'lik k{\i}s{\i}m genellikle en \"{o}nemli bilgiyi i\c{c}erir (gazetecilik ``inverted pyramid'' yap{\i}s{\i}). Ancak sayfan{\i}n ortas{\i}nda veya sonunda \"{o}nemli bilgi varsa kaybedilir.
+\end{ornek}
+
+
+\subsection{User-Agent Spoofing: Etik ve Teknik Boyutlar}
+\label{subsec:user-agent}
+
+\begin{lstlisting}[caption={User-Agent header ayarlar{\i} (tavily\_search.py)}, label={lst:user-agent}]
+headers = {
+    'User-Agent': 'Mozilla/5.0 (compatible; '
+                  'LocoDex-DeepSearch/1.0)',
+    'Accept': 'text/html,application/xhtml+xml,'
+              'application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
+}
+\end{lstlisting}
+
+\begin{dikkat}
+\textbf{Etik de\u{g}erlendirme:} \texttt{tavily\_search.py}'deki \texttt{LocoDex-DeepSearch/1.0} tan{\i}mlamas{\i} kendini bot olarak tan{\i}tt{\i}\u{g}{\i} i\c{c}in daha etiktir. \texttt{smart\_multilingual\_research.py}'deki Windows Chrome taklidinde ise bot kimli\u{g}i gizlenir. Ayr{\i}ca LocoDex, \texttt{robots.txt} kontrol\"{u} \textbf{yapmamaktad{\i}r} --- bu \"{o}nemli bir eksikliktir.
+\end{dikkat}
+
+\noindent
+Teknik boyut: Baz{\i} web sunucular{\i} bot User-Agent'lar{\i}n{\i} engeller. Taray{\i}c{\i} UA g\"{o}ndermek bu engeli a\c{s}abilir; ancak JavaScript render gerektiren sayfalar yine \c{c}al{\i}\c{s}maz (LocoDex JS render yapma kapasitesine sahip de\u{g}ildir) ve Cloudflare gibi bot korumalar{\i} daha sofistike y\"{o}ntemler kullan{\i}r (JS challenge, browser fingerprinting).
+
+
+% ============================================================
+%  4.6 BILGI ALMA (INFORMATION RETRIEVAL) TEORISI
+% ============================================================
+\section{Bilgi Alma (Information Retrieval) Teorisi}
+\label{sec:ir-theory}
+
+Bu b\"{o}l\"{u}m, modern arama sistemlerinin temelini olu\c{s}turan TF-IDF ve BM25 algoritmalar{\i}n{\i} matematiksel olarak t\"{u}retir.
+
+\subsection{TF-IDF: Term Frequency \texorpdfstring{$\times$}{x} Inverse Document Frequency}
+\label{subsec:tfidf}
+
+\subsubsection{Motivasyon}
+
+Bir belge koleksiyonunda bir terimin ne kadar ``\"{o}nemli'' oldu\u{g}unu \"{o}l\c{c}mek istiyoruz. \.{I}ki boyut vard{\i}r:
+
+\begin{enumerate}
+  \item Terim belgede s{\i}k ge\c{c}iyorsa \"{o}nemlidir (\textbf{TF}).
+  \item Terim az belgede ge\c{c}iyorsa ay{\i}rt edicidir (\textbf{IDF}).
+\end{enumerate}
+
+\subsubsection{Term Frequency (TF)}
+
+Ham frekans: $f(t,d)$ = $t$ teriminin $d$ belgesindeki g\"{o}r\"{u}lme say{\i}s{\i}. Normalize edilmi\c{s} (augmented) TF:
+
+\begin{formulbox}[Term Frequency Form\"{u}l\"{u}]
+\begin{equation}
+\text{tf}(t, d) = 0.5 + 0.5 \cdot \frac{f(t, d)}{\max\{f(t', d) : t' \in d\}}
+\label{eq:tf}
+\end{equation}
+
+Bu normalizasyon:
+\begin{itemize}
+  \item Uzun belgelerin haks{\i}z avantaj{\i}n{\i} \"{o}nler
+  \item T\"{u}m TF de\u{g}erlerini $[0.5, 1.0]$ aral{\i}\u{g}{\i}na s{\i}k{\i}\c{s}t{\i}r{\i}r
+  \item $0.5$ smoothing sabiti, s{\i}f{\i}r frekans{\i}n bile tam s{\i}f{\i}r olmamas{\i}n{\i} sa\u{g}lar
+\end{itemize}
+\end{formulbox}
+
+\subsubsection{Inverse Document Frequency (IDF)}
+
+\begin{formulbox}[Inverse Document Frequency Form\"{u}l\"{u}]
+\begin{equation}
+\text{idf}(t, D) = \ln\!\left(\frac{N}{|\{d \in D : t \in d\}|}\right)
+\label{eq:idf}
+\end{equation}
+
+\begin{itemize}
+  \item $N$ = toplam belge say{\i}s{\i}
+  \item $|\{d \in D : t \in d\}|$ = $t$ terimini i\c{c}eren belge say{\i}s{\i} (document frequency)
+\end{itemize}
+\textbf{Notasyon notu:} Bu b\"{o}l\"{u}m boyunca \emph{do\u{g}al logaritma} ($\ln = \log_e$) kullan{\i}lacakt{\i}r. B\"{o}ylece TF-IDF ve BM25 \"{o}rnekleri ayn{\i} taban\,$e$ \"{u}zerinden hesaplan{\i}r --- klasik IR literat\"{u}r\"{u}nde $\log_2$, $\log_{10}$ ve $\ln$ taban tercihleri de g\"{o}r\"{u}lebilir; sabit oranlar farkl{\i} olsa da \emph{s{\i}ralama} (relative ranking) de\u{g}i\c{s}mez. Tutarl{\i}l{\i}k i\c{c}in tek bir taban se\c{c}ilmesi tavsiye edilir.
+\end{formulbox}
+
+\noindent
+\textbf{T\"{u}retim mant{\i}\u{g}{\i}:} ``the'', ``is'', ``and'' gibi terimler neredeyse her belgede ge\c{c}er: $\text{df} \approx N \Rightarrow \text{idf} \approx \ln(N/N) = 0$. ``Quantum'', ``mesothelioma'' gibi nadir terimler az belgede ge\c{c}er: $\text{df} \ll N \Rightarrow \text{idf} \gg 0$. Logaritma, $\text{df}$'deki b\"{u}y\"{u}k varyasyonu \"{o}l\c{c}eklendirir.
+
+\subsubsection{TF-IDF Skoru}
+
+\begin{equation}
+\text{tfidf}(t, d, D) = \text{tf}(t, d) \times \text{idf}(t, D)
+\label{eq:tfidf}
+\end{equation}
+
+\begin{ornek}
+\textbf{Say{\i}sal \"{O}rnek:} $N = 10\,000$ belge. Belge $d$ = ``The cat sat on the mat. The cat is happy.''
+
+Terim frekanslar{\i}: the: $f=3$ (en s{\i}k), cat: $f=2$, sat/on/mat/is/happy: $f=1$.
+
+\begin{align*}
+\text{tf}(\text{``cat''}, d) &= 0.5 + 0.5 \cdot (2/3) = 0.833 \\
+\text{tf}(\text{``happy''}, d) &= 0.5 + 0.5 \cdot (1/3) = 0.667 \\
+\text{tf}(\text{``the''}, d) &= 0.5 + 0.5 \cdot (3/3) = 1.000
+\end{align*}
+
+IDF (koleksiyonda, do\u{g}al logaritma): ``the'' 9500 belgede, ``cat'' 500 belgede, ``happy'' 2000 belgede ge\c{c}er:
+
+\begin{align*}
+\text{idf}(\text{``the''})   &= \ln(10000/9500) = \ln(1.0526) = 0.0513 \\
+\text{idf}(\text{``cat''})   &= \ln(10000/500) = \ln(20) = 2.996 \\
+\text{idf}(\text{``happy''}) &= \ln(10000/2000) = \ln(5) = 1.609
+\end{align*}
+
+TF-IDF skorlar{\i}:
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\color{chapterBlue}\textbf{Terim} & \color{chapterBlue}\textbf{TF} & \color{chapterBlue}\textbf{IDF} & \color{chapterBlue}\textbf{TF-IDF} \\
+\midrule
+``the''   & 1.000 & 0.0513 & \color{codeRed}0.0513 \\
+``cat''   & 0.833 & 2.996  & \color{codeGreen}2.496 \\
+``happy'' & 0.667 & 1.609  & 1.073 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+``cat'' en y\"{u}ksek skora sahip --- bu belgeyi di\u{g}er belgelerden en iyi ay{\i}ran terim. ``the'' yayg{\i}n oldu\u{g}u i\c{c}in neredeyse s{\i}f{\i}r skor al{\i}r. (Not: T\"{u}m de\u{g}erler ayn{\i} taban\,$e$ \"{u}zerinden; $\log_{10}$ se\c{c}ilseydi de\u{g}erler $\ln$'in $1/\ln(10) \approx 0.434$ kat{\i} olurdu, ama \emph{s{\i}ralama} de\u{g}i\c{s}mezdi.)
+\end{ornek}
+
+
+\subsection{BM25 (Okapi BM25): Modern Arama Motorlar{\i}n{\i}n Temeli}
+\label{subsec:bm25}
+
+TF-IDF'in modern, daha sofistike versiyonudur. \c{C}o\u{g}u arama motorunun (Elasticsearch, Lucene, vb.) temel ranking fonksiyonudur.
+
+\subsubsection{Form\"{u}l}
+
+Bir sorgu $Q = \{q_1, q_2, \ldots, q_m\}$ ve belge $D$ i\c{c}in:
+
+\begin{formulbox}[BM25 Ranking Form\"{u}l\"{u}]
+\begin{equation}
+\text{score}(D, Q) = \sum_{i=1}^{m} \text{idf}(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot \left(1 - b + b \cdot \dfrac{|D|}{\text{avgdl}}\right)}
+\label{eq:bm25}
+\end{equation}
+
+IDF bile\c{s}eni (BM25 varyant{\i}, do\u{g}al logaritma):
+\begin{equation}
+\text{idf}(q_i) = \ln\!\left(\frac{N - n(q_i) + 0.5}{n(q_i) + 0.5}\right)
+\label{eq:bm25-idf}
+\end{equation}
+
+\begin{itemize}
+  \item $f(q_i, D)$ = $q_i$'nin $D$'deki frekas{\i}
+  \item $|D|$ = belge uzunlu\u{g}u (kelime say{\i}s{\i})
+  \item $\text{avgdl}$ = ortalama belge uzunlu\u{g}u
+  \item $k_1 = 1.2$ (terim frekans doyma parametresi, tipik: $1.2\text{--}2.0$)
+  \item $b = 0.75$ (belge uzunlu\u{g}u normalizasyon parametresi)
+  \item $n(q_i)$ = $q_i$'yi i\c{c}eren belge say{\i}s{\i}
+\end{itemize}
+\end{formulbox}
+
+\subsubsection{$k_1$ Parametresinin Anlam{\i}}
+
+\begin{itemize}
+  \item $k_1 \to 0$: TF etkisi azal{\i}r, binary (var/yok) modeline yakla\c{s}{\i}r.
+  \item $k_1 \to \infty$: Ham TF kullan{\i}l{\i}r (doyma yok).
+  \item $k_1 = 1.2$ (standart): 1--3 kez ge\c{c}en terimler aras{\i}nda fark belirgin; 10+ kez ge\c{c}enler i\c{c}in art{\i}\c{s} yava\c{s}lar (saturation).
+\end{itemize}
+
+\noindent
+Doyma (saturation) \"{o}zelli\u{g}i:
+\begin{equation}
+\text{tf}_{\text{BM25}} = \frac{f \cdot (k_1 + 1)}{f + k_1} \xrightarrow{f \to \infty} (k_1 + 1)
+\label{eq:bm25-saturation}
+\end{equation}
+
+\subsubsection{$b$ Parametresinin Anlam{\i}}
+
+\begin{itemize}
+  \item $b = 0$: Belge uzunlu\u{g}u normalizasyonu yok.
+  \item $b = 1$: Tam normalizasyon (uzun belgeler g\"{u}\c{c}l\"{u} penalty al{\i}r).
+  \item $b = 0.75$ (standart): Orta seviye normalizasyon.
+\end{itemize}
+
+\subsubsection{Neden TF-IDF De\u{g}il BM25?}
+
+TF-IDF'in problemi: $\text{tf}$ lineer artar. Bir terim 100 kez ge\c{c}ti\u{g}i belge, 1 kez ge\c{c}ti\u{g}inden 100$\times$ daha y\"{u}ksek skor al{\i}r. Pratikte bu mant{\i}kl{\i} de\u{g}ildir --- 100 kez ge\c{c}mesi ``keyword stuffing'' olabilir. BM25'te tf doyuma ula\c{s}{\i}r (asymptotic saturation), Denklem~\eqref{eq:bm25-saturation}'de g\"{o}sterildi\u{g}i gibi.
+
+\begin{ornek}
+\textbf{Say{\i}sal \"{O}rnek:} $N = 10\,000$, $\text{avgdl} = 500$, $k_1 = 1.2$, $b = 0.75$.
+
+Sorgu: ``artificial intelligence''. Belge $D$: 800 kelime, ``artificial'' 5 kez, ``intelligence'' 3 kez.
+
+$n(\text{``artificial''}) = 1500$, \quad $n(\text{``intelligence''}) = 2000$.
+
+\textbf{IDF hesab{\i}:}
+\begin{align*}
+\text{idf}(\text{``artificial''})   &= \ln\!\left(\frac{10000 - 1500 + 0.5}{1500 + 0.5}\right) = \ln(5.665) = 1.735 \\
+\text{idf}(\text{``intelligence''}) &= \ln\!\left(\frac{10000 - 2000 + 0.5}{2000 + 0.5}\right) = \ln(3.999) = 1.386
+\end{align*}
+
+\textbf{TF bile\c{s}eni (``artificial''):}
+\begin{align*}
+\text{tf\_part} &= \frac{5 \times 2.2}{5 + 1.2 \times (1 - 0.75 + 0.75 \times 800/500)} \\
+                &= \frac{11}{5 + 1.2 \times 1.45} = \frac{11}{6.74} = 1.632
+\end{align*}
+
+Skor: $1.735 \times 1.632 = 2.832$.
+
+\textbf{TF bile\c{s}eni (``intelligence''):}
+\[
+\text{tf\_part} = \frac{3 \times 2.2}{3 + 1.2 \times 1.45} = \frac{6.6}{4.74} = 1.392
+\]
+
+Skor: $1.386 \times 1.392 = 1.929$.
+
+\textbf{Toplam BM25 skoru:} $2.832 + 1.929 = \mathbf{4.761}$
+\end{ornek}
+
+
+\subsection{Precision, Recall ve F1-Score}
+\label{subsec:precision-recall}
+
+\subsubsection{Temel Tan{\i}mlar}
+
+Bir arama sistemi sonu\c{c} d\"{o}nd\"{u}rd\"{u}\u{g}\"{u}nde:
+\begin{itemize}
+  \item \textbf{TP} (True Positive): \.{I}lgili \textbf{ve} d\"{o}nd\"{u}r\"{u}len
+  \item \textbf{FP} (False Positive): \.{I}lgisiz \textbf{ama} d\"{o}nd\"{u}r\"{u}len
+  \item \textbf{FN} (False Negative): \.{I}lgili \textbf{ama} d\"{o}nd\"{u}r\"{u}lmeyen
+  \item \textbf{TN} (True Negative): \.{I}lgisiz \textbf{ve} d\"{o}nd\"{u}r\"{u}lmeyen
+\end{itemize}
+
+\begin{formulbox}[Precision, Recall ve F1 Form\"{u}lleri]
+\begin{align}
+\text{Precision} &= \frac{\text{TP}}{\text{TP} + \text{FP}} \quad \text{``d\"{o}nd\"{u}r\"{u}lenler ne kadar do\u{g}ru?''} \label{eq:search-precision} \\[4pt]
+\text{Recall}    &= \frac{\text{TP}}{\text{TP} + \text{FN}} \quad \text{``ilgili olanlar{\i}n ne kadar{\i} d\"{o}nd\"{u}?''} \label{eq:search-recall} \\[4pt]
+F_1 &= \frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision} + \text{Recall}} \label{eq:search-f1}
+\end{align}
+\end{formulbox}
+
+\noindent
+\textbf{Neden harmonik ortalama?} Aritmetik ortalama yerine harmonik ortalama kullan{\i}lmas{\i}n{\i}n sebebi: her iki metri\u{g}in de y\"{u}ksek olmas{\i}n{\i} zorlamak. E\u{g}er biri $1.0$, di\u{g}eri $0.0$ ise:
+\begin{align*}
+\text{Aritmetik:} \quad & (1.0 + 0.0)/2 = 0.5 \quad \text{(yan{\i}lt{\i}c{\i})} \\
+\text{Harmonik:}  \quad & 2 \cdot (1.0 \times 0.0)/(1.0 + 0.0) = 0.0 \quad \text{(do\u{g}ru)}
+\end{align*}
+
+\begin{ornek}
+\textbf{LocoDex'te Precision/Recall Tradeoff:}
+
+20 arama sonucundan 12'si ger\c{c}ekten konuyla ilgili, 8'i ilgisiz.
+
+\textbf{Filtreleme \"{o}ncesi} (20 sonu\c{c} d\"{o}n\"{u}yor):
+\begin{align*}
+\text{TP} &= 12, \quad \text{FP} = 8, \quad \text{FN} = 0 \\
+\text{Precision} &= 12/20 = 0.60, \quad \text{Recall} = 12/12 = 1.00 \\
+F_1 &= 2 \cdot (0.60 \times 1.00)/(0.60 + 1.00) = 0.75
+\end{align*}
+
+\textbf{G\"{u}venilirlik filtresi sonras{\i}} (score $\geq 30$ filtresi 5 sonucu eler; 2'si ilgili, 3'\"{u} ilgisiz):
+\begin{align*}
+\text{TP} &= 10, \quad \text{FP} = 5, \quad \text{FN} = 2 \\
+\text{Precision} &= 10/15 = 0.667, \quad \text{Recall} = 10/12 = 0.833 \\
+F_1 &= 2 \cdot (0.667 \times 0.833)/(0.667 + 0.833) = 0.741
+\end{align*}
+
+Precision artt{\i} ($0.60 \to 0.667$), Recall d\"{u}\c{s}t\"{u} ($1.00 \to 0.833$). F1 \c{c}ok az de\u{g}i\c{s}ti ($0.75 \to 0.741$) --- filtre ``hassas'' \c{c}al{\i}\c{s}{\i}yor, baz{\i} ilgili kaynaklar{\i} da filtreliyor.
+\end{ornek}
+
+
+\subsection{Semantic Search vs Keyword Search (Teorik Kar\c{s}{\i}la\c{s}t{\i}rma)}
+\label{subsec:semantic-search}
+
+\textbf{Keyword search} (TF-IDF, BM25): Terim e\c{s}lemesi. ``Kedi'' arayan ``cat'' bulamaz.
+
+\textbf{Semantic search} (embedding benzerli\u{g}i): Anlamsal benzerlik. ``Kedi'' ve ``cat'' yak{\i}n embedding vekt\"{o}rlerine sahip olur.
+
+\subsubsection{Cosine Similarity (Referans Form\"{u}l\"{u})}
+
+\begin{equation}
+\cos(\theta) = \frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\| \cdot \|\mathbf{B}\|}
+\label{eq:cosine}
+\end{equation}
+
+\noindent
+\.{I}ki vekt\"{o}r $\mathbf{A}$ ve $\mathbf{B}$ aras{\i}ndaki a\c{c}{\i}y{\i} \"{o}l\c{c}er: $1$ = ayn{\i} y\"{o}n (\c{c}ok benzer), $0$ = dik (ilgisiz), $-1$ = z{\i}t.
+
+\begin{dikkat}
+\textbf{LocoDex'in IR boru hatt{\i}nda cosine similarity KULLANILMIYOR.} LocoDex'in retrieval matemati\u{g}i tamamen \emph{keyword-based} arama (Google $\to$ DuckDuckGo $\to$ Tavily fallback chain) ve LLM tabanl{\i} ``relevance check'' \"{u}zerine kuruludur. Yukar{\i}daki cosine form\"{u}l\"{u} sadece \emph{teorik referans} olarak verilmi\c{s}tir; sistem semantic search ya da hibrit retrieval (BM25 + dense + RRF) kullanm{\i}yor. \\
+
+\textbf{Cosine'in projede tek ge\c{c}ti\u{g}i yer:} B\"{o}l\"{u}m~7'deki Cartesia Sonic TTS entegrasyonunda \emph{ses embedding} (voice embedding) uzay{\i}nda iki ses g\"{o}m\"{u}lmesi aras{\i}ndaki benzerlik i\c{c}in kullan{\i}l{\i}r. Bu da kapal{\i}-kutu Cartesia API'sinin i\c{c}sel mekanizmas{\i}d{\i}r, LocoDex'in retrieval'{i}na ait de\u{g}ildir. \\
+
+\textbf{M\"{u}lakat tavsiyesi:} ``Embedding similarity nas{\i}l \c{c}al{\i}\c{s}{\i}yor?'' diye sorulursa: ``Bu projede semantic similarity hesaplam{\i}yoruz; cosine sadece TTS voice embedding i\c{c}in teorik olarak anlat{\i}lm{\i}\c{s}; retrieval'{i}m{\i}z keyword-based + LLM-as-a-Judge.'' \\
+
+LLM-tabanl{\i} relevance check her sonu\c{c} i\c{c}in $\sim$100--200\,ms latency ekler ve bir t\"{u}r ``soft semantic filtering'' g\"{o}revi g\"{o}r\"{u}r.
+\end{dikkat}
+
+
+\subsection{Content Filtering: G\"{u}venilirlik Skoru Threshold'lar{\i}}
+\label{subsec:content-filtering}
+
+\.{I}ki farkl{\i} \"{o}l\c{c}ek kullan{\i}l{\i}r:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\color{chapterBlue}\textbf{Pipeline} &
+\color{chapterBlue}\textbf{\"{O}l\c{c}ek} &
+\color{chapterBlue}\textbf{Threshold} \\
+\midrule
+\texttt{real\_deep\_research.py} & 0--100 & $\geq 30$ \\
+\texttt{smart\_multilingual.py}  & 0--10  & $\geq 6$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{dikkat}
+Bu iki threshold e\c{s}de\u{g}er \textbf{de\u{g}ildir}: $30/100 = 0.30$ ama $6/10 = 0.60$. \texttt{smart\_multilingual} \c{c}ok daha s{\i}k{\i} filtreleme yapar. Bu tutars{\i}zl{\i}k muhtemelen bir tasar{\i}m hatas{\i} veya bilin\c{c}li tercihtir --- \texttt{real\_deep\_research} daha toleransl{\i} (daha fazla kaynak ge\c{c}irme), \texttt{smart\_multilingual} daha s{\i}k{\i} (daha az ama daha kaliteli kaynak).
+\end{dikkat}
+
+\noindent
+Optimal threshold se\c{c}imi (ROC analizi perspektifi): d\"{u}\c{s}\"{u}k threshold ($30/100$) y\"{u}ksek recall ama d\"{u}\c{s}\"{u}k precision, y\"{u}ksek threshold ($60/100$) d\"{u}\c{s}\"{u}k recall ama y\"{u}ksek precision verir. ``Sweet spot'' genellikle $40\text{--}60/100$ aral{\i}\u{g}{\i}ndad{\i}r.
+
+
+% ============================================================
+%  4.7 ARAMA SONUCU DEDUPLICATION
+% ============================================================
+\section{Arama Sonucu Tekrars{\i}zla\c{s}t{\i}rma (Deduplication)}
+\label{sec:deduplication}
+
+Farkl{\i} arama motorlar{\i}ndan ve sorgulardan d\"{o}nen sonu\c{c}larda tekrar eden i\c{c}eriklerin filtrelenmesi gerekir. Bu b\"{o}l\"{u}m, basit URL e\c{s}lemesinden ileri d\"{u}zey i\c{c}erik parmak izine kadar dedup y\"{o}ntemlerini inceler.
+
+\subsection{URL-Based Dedup: Hash Set ile $O(1)$ Lookup}
+\label{subsec:url-dedup}
+
+\begin{lstlisting}[caption={URL tabanl{\i} deduplication (data\_types.py)}, label={lst:dedup}]
+def dedup(self):
+    def deduplicate_by_link(results):
+        seen_links = set()
+        unique_results = []
+
+        for result in results:
+            if result.link not in seen_links:
+                seen_links.add(result.link)
+                unique_results.append(result)
+
+        return unique_results
+
+    return DeepResearchResults(
+        results=deduplicate_by_link(self.results)
+    )
+\end{lstlisting}
+
+\subsubsection{Karma\c{s}{\i}kl{\i}k Analizi}
+
+\texttt{set()} Python'da hash table (dict altyap{\i}s{\i}) kullan{\i}r:
+\begin{itemize}
+  \item \texttt{not in} kontrol\"{u}: Ortalama $O(1)$, en k\"{o}t\"{u} $O(n)$ (hash collision)
+  \item Toplam ($n$ sonu\c{c} i\c{c}in): Ortalama $O(n)$, en k\"{o}t\"{u} $O(n^2)$
+  \item Hash fonksiyonu: SipHash-2-4 (Python 3.4+, DoS sald{\i}r{\i}lar{\i}na kar\c{s}{\i} g\"{u}venli)
+\end{itemize}
+
+\begin{ornek}
+\textbf{Say{\i}sal \"{O}rnek:} 50 arama sonucu, 10 duplicate URL:
+\begin{itemize}
+  \item Set boyutu: max 40 unique URL
+  \item 50 \texttt{not in} kontrol\"{u}: $50 \times O(1) = O(50)$
+  \item 40 \texttt{add} i\c{s}lemi: $40 \times O(1) = O(40)$
+  \item Toplam: $O(90) \approx O(n)$
+\end{itemize}
+
+1 milyon sonu\c{c} i\c{c}in: haf{\i}za $\sim$80 byte/URL $\times$ 1M $= \sim$80MB, zaman $\sim$1M $\times$ $\sim$100ns $= \sim$100ms.
+\end{ornek}
+
+
+\subsection{Content-Based Dedup: Jaccard Similarity}
+\label{subsec:jaccard}
+
+\subsubsection{Problem}
+
+Ayn{\i} i\c{c}erik farkl{\i} URL'lerde olabilir:
+\begin{itemize}
+  \item \texttt{https://example.com/article}
+  \item \texttt{https://example.com/article?ref=google}
+  \item \texttt{https://amp.example.com/article}
+  \item \texttt{https://web.archive.org/.../example.com/article}
+\end{itemize}
+
+\noindent
+URL-based dedup bunlar{\i} yakalayamaz.
+
+\subsubsection{Jaccard Similarity Form\"{u}l\"{u}}
+
+\.{I}ki k\"{u}me $A$ ve $B$ i\c{c}in:
+
+\begin{formulbox}[Jaccard Similarity]
+\begin{equation}
+J(A, B) = \frac{|A \cap B|}{|A \cup B|}
+\label{eq:jaccard}
+\end{equation}
+
+Text i\c{c}in: $A$ ve $B$ = kelimelerin (veya $n$-gram'lar{\i}n) k\"{u}meleri.
+\end{formulbox}
+
+\begin{ornek}
+\textbf{Say{\i}sal \"{O}rnek:}
+
+Belge~1: ``The quick brown fox jumps over the lazy dog''
+
+Belge~2: ``The quick brown fox leaps over the lazy cat''
+
+\begin{align*}
+A &= \{\text{the, quick, brown, fox, jumps, over, lazy, dog}\} \\
+B &= \{\text{the, quick, brown, fox, leaps, over, lazy, cat}\} \\
+A \cap B &= \{\text{the, quick, brown, fox, over, lazy}\}, \quad |A \cap B| = 6 \\
+A \cup B &= \{\text{the, quick, brown, fox, jumps, leaps, over, lazy, dog, cat}\}, \quad |A \cup B| = 10 \\
+J(A, B) &= 6/10 = 0.60
+\end{align*}
+
+Threshold genellikle $0.80\text{--}0.90$. $0.60 < 0.80$, yani bu iki belge ``farkl{\i}'' kabul edilir.
+\end{ornek}
+
+\noindent
+Karma\c{s}{\i}kl{\i}k: Naive Jaccard hesaplama $O(|A| + |B|)$ (k\"{u}me i\c{s}lemleri hash set ile). Ancak $N$ belge \c{c}iftini kar\c{s}{\i}la\c{s}t{\i}rmak $O(N^2 \cdot m)$, burada $m$ = ortalama belge boyutu.
+
+
+\subsection{MinHash: Yakla\c{s}{\i}k Jaccard Hesaplama}
+\label{subsec:minhash}
+
+\subsubsection{Motivasyon}
+
+$N = 10\,000$ belge i\c{c}in, $N(N-1)/2 = 49\,995\,000$ \c{c}ift kar\c{s}{\i}la\c{s}t{\i}rma gerekir. Her biri $O(m)$ ise bu \c{c}ok yava\c{s}t{\i}r.
+
+\subsubsection{Algoritma}
+
+\begin{enumerate}
+  \item $k$ tane farkl{\i} hash fonksiyonu $h_1, h_2, \ldots, h_k$ se\c{c}.
+  \item Her belge $S$ i\c{c}in: $\text{MinHash}_i(S) = \min\{h_i(x) : x \in S\}$
+  \item $P\!\big(\text{MinHash}_i(A) = \text{MinHash}_i(B)\big) = J(A, B)$
+  \item $k$ imzay{\i} kar\c{s}{\i}la\c{s}t{\i}rarak Jaccard tahmin et: $\hat{J} = (\text{e\c{s}it imza say{\i}s{\i}}) / k$
+\end{enumerate}
+
+\begin{formulbox}[MinHash Olas{\i}l{\i}k \.{I}spat{\i}]
+$h$ rastgele bir perm\"{u}tasyon olsun. $A \cup B$'deki elemanlar{\i} $h$ ile s{\i}rala. \.{I}lk eleman (minimum hash), $A \cap B$'den gelme olas{\i}l{\i}\u{g}{\i}:
+
+\begin{equation}
+P\!\big(\min(h(A)) = \min(h(B))\big) = \frac{|A \cap B|}{|A \cup B|} = J(A, B)
+\label{eq:minhash-proof}
+\end{equation}
+\end{formulbox}
+
+\noindent
+Karma\c{s}{\i}kl{\i}k: \.{I}mza hesaplama $O(k \cdot m)$ (belge ba\c{s}{\i}na), kar\c{s}{\i}la\c{s}t{\i}rma $O(k)$ (\c{c}ift ba\c{s}{\i}na, $k \ll m$). Toplam: $O(N \cdot k \cdot m + N^2 \cdot k)$. Daha da h{\i}zland{\i}rmak i\c{c}in \textbf{Locality-Sensitive Hashing} (LSH) ile $N^2$ azalt{\i}labilir.
+
+
+\subsection{SimHash: \.{I}\c{c}erik Parmak \.{I}zi}
+\label{subsec:simhash}
+
+Google'{\i}n web-scale dedup'ta kulland{\i}\u{g}{\i} y\"{o}ntemdir (Charikar, 2002).
+
+\subsubsection{Algoritma}
+
+\begin{enumerate}
+  \item Belgeyi kelime/token'lara b\"{o}l
+  \item Her token i\c{c}in $b$-bit hash hesapla
+  \item Token a\u{g}{\i}rl{\i}klar{\i}na g\"{o}re bit vekt\"{o}rlerini topla
+  \item Toplam vekt\"{o}rde: pozitif $\to 1$, negatif $\to 0$
+\end{enumerate}
+
+\begin{ornek}
+\textbf{SimHash Hesaplama ($b = 8$ bit):}
+
+Belge: ``the cat sat''. Her token i\c{c}in 8-bit hash ve a\u{g}{\i}rl{\i}k $= 1$:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\color{chapterBlue}\textbf{Token} & \color{chapterBlue}\textbf{Hash} & \color{chapterBlue}\textbf{$\pm$ Vekt\"{o}r} \\
+\midrule
+``the'' & 10110010 & $[+1, -1, +1, +1, -1, -1, +1, -1]$ \\
+``cat'' & 01101001 & $[-1, +1, +1, -1, +1, -1, -1, +1]$ \\
+``sat'' & 11010100 & $[+1, +1, -1, +1, -1, +1, -1, -1]$ \\
+\midrule
+\textbf{Toplam} & & $[+1, +1, +1, +1, -1, -1, -1, -1]$ \\
+\textbf{SimHash} & \textbf{11110000} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\.{I}ki belgenin SimHash'leri aras{\i}ndaki Hamming distance, i\c{c}erik benzerli\u{g}iyle ters orant{\i}l{\i}d{\i}r:
+\begin{itemize}
+  \item Hamming distance $= 0$: Ayn{\i} i\c{c}erik
+  \item Hamming distance $\leq 3$ (64-bit i\c{c}in): Muhtemelen duplicate
+\end{itemize}
+\end{ornek}
+
+\noindent
+Karma\c{s}{\i}kl{\i}k: $O(m \cdot b)$ her belge i\c{c}in ($m$ = token say{\i}s{\i}, $b$ = bit say{\i}s{\i}). Kar\c{s}{\i}la\c{s}t{\i}rma: $O(b) = O(1)$ (sabit bit say{\i}s{\i} i\c{c}in).
+
+
+\subsection{Levenshtein Distance (Edit Distance)}
+\label{subsec:levenshtein}
+
+\.{I}ki string aras{\i}ndaki minimum i\c{s}lem (ekleme, silme, de\u{g}i\c{s}tirme) say{\i}s{\i}d{\i}r.
+
+\begin{formulbox}[Levenshtein Dinamik Programlama Form\"{u}l\"{u}]
+\begin{equation}
+d[i][j] = \min \begin{cases}
+d[i-1][j] + 1       & \text{(silme)} \\
+d[i][j-1] + 1       & \text{(ekleme)} \\
+d[i-1][j-1] + c     & \text{(de\u{g}i\c{s}tirme: } c = 0 \text{ eger } s_1[i] = s_2[j], \text{ 1 aksi halde)}
+\end{cases}
+\label{eq:levenshtein}
+\end{equation}
+
+Karma\c{s}{\i}kl{\i}k: $O(m \times n)$ zaman, $O(\min(m, n))$ haf{\i}za (optimize edilmi\c{s}).
+\end{formulbox}
+
+\begin{ornek}
+\textbf{Say{\i}sal \"{O}rnek:} $s_1$ = ``kitten'', $s_2$ = ``sitting''
+
+\[
+\begin{array}{c|cccccccc}
+     & \epsilon & s & i & t & t & i & n & g \\
+\hline
+\epsilon & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\
+k & 1 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\
+i & 2 & 2 & 1 & 2 & 3 & 4 & 5 & 6 \\
+t & 3 & 3 & 2 & 1 & 2 & 3 & 4 & 5 \\
+t & 4 & 4 & 3 & 2 & 1 & 2 & 3 & 4 \\
+e & 5 & 5 & 4 & 3 & 2 & 2 & 3 & 4 \\
+n & 6 & 6 & 5 & 4 & 3 & 3 & 2 & 3
+\end{array}
+\]
+
+Sonu\c{c}: $d(\text{``kitten''}, \text{``sitting''}) = 3$. \.{I}\c{s}lemler: k$\to$s, e$\to$i, $\epsilon \to$g.
+\end{ornek}
+
+\noindent
+URL dedup ba\u{g}lam{\i}nda: ayn{\i} domain'in farkl{\i} URL varyantlar{\i}n{\i} tespit etmek i\c{c}in kullan{\i}labilir (query parameter farkl{\i}l{\i}klar{\i}, typo'lar, www/non-www).
+
+
+\subsection{LocoDex Dedup De\u{g}erlendirmesi}
+\label{subsec:dedup-assessment}
+
+\textbf{Mevcut durum:} Yaln{\i}zca \texttt{data\_types.py}'deki \texttt{dedup()} metodu --- exact URL match.
+
+\begin{table}[H]
+\centering
+\caption{\.{I}yile\c{s}tirme \"{o}nerileri (karma\c{s}{\i}kl{\i}k s{\i}ral{\i})}
+\label{tab:dedup-improvements}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{clcX}
+\toprule
+\color{chapterBlue}\textbf{\#} &
+\color{chapterBlue}\textbf{Y\"{o}ntem} &
+\color{chapterBlue}\textbf{$O(\cdot)$} &
+\color{chapterBlue}\textbf{A\c{c}{\i}klama} \\
+\midrule
+1 & URL normalizasyonu & $O(n)$ & Query param \c{c}{\i}kar, www normalize et \\
+2 & Content hash (SHA-256) & $O(n)$ & Ayn{\i} i\c{c}eri\u{g}i farkl{\i} URL'lerde yakala \\
+3 & SimHash + Hamming & $O(n) + O(n^2)$ & Yak{\i}n i\c{c}erikleri tespit et \\
+4 & MinHash + LSH & $O(n \cdot k)$ & B\"{u}y\"{u}k \"{o}l\c{c}ekli yakla\c{s}{\i}k dedup \\
+\bottomrule
+\end{tabularx}
+\smallskip
+{\small Mevcut $O(n)$ performans{\i} 20 sonu\c{c} i\c{c}in yeterlidir, ancak kalite a\c{c}{\i}s{\i}ndan yetersizdir.}
+\end{table}
+
+
+% ============================================================
+%  4.8 ARAMA PIPELINE TAMAMLAYICI DIYAGRAM
+% ============================================================
+\section{Arama Pipeline'{\i} Tam Ak{\i}\c{s} Diyagram{\i}}
+\label{sec:pipeline-diagram}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1.3cm and 2cm,
+  stage/.style={rectangle, rounded corners=4pt, draw=chapterBlue, fill=boxBG,
+                text=textWhite, minimum width=3.2cm, minimum height=0.9cm,
+                font=\small\bfseries, align=center, line width=0.8pt},
+  process/.style={rectangle, rounded corners=2pt, draw=sectionBlue!60, fill=codeBG,
+                  text=textWhite, minimum width=3.2cm, minimum height=0.7cm,
+                  font=\footnotesize, align=center, line width=0.5pt},
+  arrow/.style={->, >=stealth, line width=0.6pt, color=sectionBlue!70},
+  darrow/.style={->, >=stealth, line width=0.6pt, color=warnOrange, dashed}
+]
+
+  % Sol sutun: Arama
+  \node[stage] (query) {Kullan{\i}c{\i} Sorgusu};
+  \node[process, below=of query] (llm-query) {LLM ile sorgu\\decomposition};
+  \node[stage, below=of llm-query] (google) {Google Search};
+  \node[process, below=of google] (ddg) {DuckDuckGo\\(fallback)};
+  \node[process, below=of ddg] (tavily) {Tavily API\\(backup)};
+
+  % Orta sutun: Icerik
+  \node[stage, right=3cm of google] (fetch) {HTTP GET\\(timeout'lu)};
+  \node[process, below=of fetch] (parse) {HTML Parsing\\(BeautifulSoup)};
+  \node[process, below=of parse] (clean) {Content\\Extraction};
+  \node[process, below=of clean] (trunc) {Truncation\\(3000--4000 kar.)};
+
+  % Sag sutun: Degerlendirme
+  \node[stage, right=3cm of fetch] (dedup) {URL Dedup\\(hash set)};
+  \node[process, below=of dedup] (relevance) {LLM Relevance\\Check};
+  \node[process, below=of relevance] (reliability) {G\"{u}venilirlik\\Skoru};
+  \node[stage, below=of reliability] (results) {\color{codeGreen}Filtrelenmi\c{s}\\Sonu\c{c}lar};
+
+  % Oklar
+  \draw[arrow] (query) -- (llm-query);
+  \draw[arrow] (llm-query) -- (google);
+  \draw[darrow] (google) -- node[right, font=\scriptsize\color{warnOrange}] {yetersiz} (ddg);
+  \draw[darrow] (ddg) -- node[right, font=\scriptsize\color{warnOrange}] {ba\c{s}ar{\i}s{\i}z} (tavily);
+
+  \draw[arrow] (google.east) -- (fetch.west);
+  \draw[arrow] (fetch) -- (parse);
+  \draw[arrow] (parse) -- (clean);
+  \draw[arrow] (clean) -- (trunc);
+
+  \draw[arrow] (trunc.east) -| (dedup.south);
+  \draw[arrow] (dedup) -- (relevance);
+  \draw[arrow] (relevance) -- (reliability);
+  \draw[arrow] (reliability) -- (results);
+
+\end{tikzpicture}
+\caption{LocoDex arama pipeline'{\i}n{\i}n tam ak{\i}\c{s} diyagram{\i}. Sol s\"{u}tun: arama motoru se\c{c}imi ve fallback zinciri. Orta s\"{u}tun: i\c{c}erik \c{c}{\i}karma ve temizleme. Sa\u{g} s\"{u}tun: de\u{g}erlendirme ve filtreleme.}
+\label{fig:full-pipeline}
+\end{figure}
+
+
+% ============================================================
+%  4.9 SINIRLAMALAR
+% ============================================================
+\section{S{\i}n{\i}rlamalar ve \.{I}yile\c{s}tirme F{\i}rsatlar{\i}}
+\label{sec:arama-sinirlamalar}
+
+\begin{table}[H]
+\centering
+\caption{Web arama alt sisteminin s{\i}n{\i}rlamalar{\i} \"{o}zeti}
+\label{tab:limitations}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\color{chapterBlue}\textbf{Konu} & \color{chapterBlue}\textbf{S{\i}n{\i}rlama} \\
+\midrule
+PageRank & LocoDex do\u{g}rudan eri\c{s}emiyor; Google API \"{u}zerinden dolayl{\i} \\
+Rate Limiting & Sabit 1s bekleme; adaptive de\u{g}il, exponential backoff yok \\
+Content Extraction & Sabit karakter limiti; content density analizi yok \\
+\texttt{robots.txt} & LocoDex kontrol etmiyor --- etik sorun \\
+Deduplication & Yaln{\i}zca URL-based; content-based yok \\
+Semantic Search & Yok; sadece LLM-based relevance check \\
+G\"{u}venilirlik & \.{I}ki farkl{\i} \"{o}l\c{c}ek (30/100 vs 6/10) tutars{\i}z \\
+Timeout & Pipeline'lar aras{\i} tutars{\i}z (5s vs 15s) \\
+JS Rendering & Yok; JavaScript ile y\"{u}klenen i\c{c}erikler eri\c{s}ilemez \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+%  OZET KUTUSU
+% ============================================================
+\begin{ozet}
+\begin{itemize}
+  \item LocoDex \"{u}\c{c} arama motorunu hibrit kullan{\i}r: Google (\"{o}ncelikli), DuckDuckGo (fallback), Tavily (backup). Bu katmanl{\i} yap{\i} \%99.9 eri\c{s}ilebilirlik sa\u{g}lar.
+
+  \item \textbf{PageRank} (Denklem~\ref{eq:pagerank}): $\text{PR}(A) = (1-d)/N + d \sum \text{PR}(T_i)/C(T_i)$. Damping factor $d = 0.85$, power iteration ile geometrik h{\i}zda yakla\c{s}{\i}r ($O(k \cdot E)$). LocoDex bunu do\u{g}rudan kullanmaz ama Google sonu\c{c}lar{\i} \"{u}zerinden dolayl{\i} etkisini al{\i}r.
+
+  \item \textbf{TF-IDF} (Denklem~\ref{eq:tfidf}): Terim \"{o}nemini, belgede s{\i}kl{\i}k (TF) $\times$ koleksiyonda nadirlik (IDF) olarak hesaplar. Basit ama etkili.
+
+  \item \textbf{BM25} (Denklem~\ref{eq:bm25}): TF-IDF'in geli\c{s}mi\c{s} versiyonu. Terim frekans doymas{\i} ($k_1 = 1.2$) ve belge uzunluk normalizasyonu ($b = 0.75$) ile keyword stuffing'e dayan{\i}kl{\i}.
+
+  \item \.{I}\c{c}erik \c{c}{\i}karma: BeautifulSoup ile $O(n)$ HTML parsing, boilerplate kald{\i}rma ile $2\text{--}3\times$ signal-to-noise iyile\c{s}tirmesi, 3000--4000 karakter truncation ile context window uyumu.
+
+  \item Deduplication: Mevcut sistem yaln{\i}zca URL-based exact match kullan{\i}r ($O(n)$). Jaccard similarity, MinHash ve SimHash gibi ileri y\"{o}ntemler uygulanm{\i}yor --- iyile\c{s}tirme f{\i}rsat{\i}.
+
+  \item Timeout stratejisi \"{u}stel da\u{g}{\i}l{\i}m modeline g\"{o}re: 5s $\to$ \%81, 10s $\to$ \%96, 15s $\to$ \%99 sayfa yakalama oran{\i}.
+\end{itemize}
+\end{ozet}

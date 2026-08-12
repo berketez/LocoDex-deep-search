@@ -1,0 +1,945 @@
+% ============================================================
+%  B\"{O}L\"{U}M 7: PODCAST \"{U}RET\.{I}M S\.{I}STEM\.{I}
+% ============================================================
+
+Bu b\"{o}l\"{u}m, LocoDex Deep Search'un ara\c{s}t{\i}rma raporlar{\i}ndan otomatik podcast \"{u}retim sistemini a\c{c}{\i}klar. Text-to-Speech (TTS) temelleri, Mel spectrogram d\"{o}n\"{u}\c{s}\"{u}m\"{u}, Nyquist--Shannon \"{o}rnekleme teoremi, script generation, audio segment birle\c{s}tirme ve Base64 kodlama konular{\i} matematik temelleriyle ele al{\i}n{\i}r.
+
+
+% ============================================================
+\section{Podcast Pipeline Mimarisi}
+\label{sec:podcast_overview}
+% ============================================================
+
+LocoDex'in podcast \"{u}retim sistemi 4 ana a\c{s}amadan olu\c{s}ur:
+
+\begin{enumerate}
+  \item \textbf{Script Generation:} LLM ile ara\c{s}t{\i}rma metninden diyalog \"{u}retimi
+  \item \textbf{Audio Synthesis:} TTS motoru ile ses \"{u}retimi (Cartesia Sonic)
+  \item \textbf{Audio Concatenation:} Segment'lerin birle\c{s}tirilmesi
+  \item \textbf{Encoding \& Delivery:} Base64 kodlama, HTML g\"{o}m\"{u}lme, dosya kaydetme
+\end{enumerate}
+
+\begin{kodref}{podcast.py L146--150}
+\begin{lstlisting}[caption={Tam podcast \"{u}retim ak{\i}\c{s}{\i}}]
+def full_podcast_generation(*, system_prompt, text,
+        podcast_name="My Podcast",
+        host_voice="laidback woman",
+        guest_voice="customer support man") -> str:
+    script = generate_podcast_script(...)
+    audio = generate_podcast_audio(script)
+    base64_audio = get_base64_audio(audio)
+    return base64_audio
+\end{lstlisting}
+\end{kodref}
+
+% --- TikZ: Podcast Pipeline ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1.2cm and 0.8cm,
+  stage/.style={
+    rectangle, rounded corners=3pt,
+    draw=chapterBlue, fill=boxBG, text=textWhite,
+    minimum width=3.8cm, minimum height=1cm,
+    font=\small\bfseries, text centered, align=center
+  },
+  io/.style={
+    trapezium, trapezium left angle=70, trapezium right angle=110,
+    draw=codeGreen!60, fill=codeBG, text=codeGreen,
+    minimum width=2.8cm, minimum height=0.7cm,
+    font=\scriptsize, text width=2.5cm, align=center
+  },
+  arrow/.style={->, >=stealth, thick, color=sectionBlue},
+  note/.style={font=\tiny, text=warnOrange, anchor=north}
+]
+
+% Giris
+\node[io] (input) {Ara\c{s}t{\i}rma Raporu\\(Markdown)};
+
+% Asamalar
+\node[stage, below=of input] (script) {1. Script\\Generation\\{\scriptsize (LLM + Pydantic)}};
+\node[stage, below=of script] (tts) {2. Audio\\Synthesis\\{\scriptsize (Cartesia Sonic TTS)}};
+\node[stage, below=of tts] (concat) {3. Segment\\Concatenation\\{\scriptsize (bytearray extend)}};
+\node[stage, below=of concat] (encode) {4. Encoding\\{\scriptsize (Base64 + HTML embed)}};
+
+% Cikislar
+\node[io, below=of encode] (output1) {data:audio/mp3;base64,...};
+\node[io, right=2.5cm of output1] (output2) {podcast.html};
+
+% Oklar
+\draw[arrow] (input) -- (script);
+\draw[arrow] (script) -- (tts);
+\draw[arrow] (tts) -- (concat);
+\draw[arrow] (concat) -- (encode);
+\draw[arrow] (encode) -- (output1);
+\draw[arrow] (encode) -| (output2);
+
+% Yan notlar
+\node[font=\tiny\color{codePurple}, right=0.4cm of script] {Llama 3.1 70B};
+\node[font=\tiny\color{codePurple}, right=0.4cm of tts] {Together AI API};
+\node[font=\tiny\color{codePurple}, right=0.4cm of concat] {MP3 bytearray};
+
+\end{tikzpicture}
+\caption{Podcast \"{u}retim pipeline'{\i}. Ara\c{s}t{\i}rma raporundan sesli podcast'e d\"{o}n\"{u}\c{s}\"{u}m 4 a\c{s}amada tamamlan{\i}r.}
+\label{fig:podcast_pipeline}
+\end{figure}
+
+
+% ============================================================
+\section{Text-to-Speech (TTS) Temelleri}
+\label{sec:tts_basics}
+% ============================================================
+
+\subsection{TTS Sistemlerinin Evrimi}
+
+Text-to-Speech teknolojisi \"{u}\c{c} nesilden ge\c{c}mi\c{s}tir:
+
+\begin{table}[H]
+\centering
+\caption{TTS nesilleri ve karakteristikleri}
+\label{tab:tts_generations}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\color{chapterBlue}\textbf{Nesil} & \color{chapterBlue}\textbf{Y\"{o}ntem} & \color{chapterBlue}\textbf{Kalite} & \color{chapterBlue}\textbf{H{\i}z} \\
+\midrule
+1. Concatenative  & \"{O}nceden kaydedilmi\c{s} ses par\c{c}alar{\i}n{\i}n birle\c{s}tirilmesi & Orta  & H{\i}zl{\i} \\
+2. Parametric      & Vokal trakt modellemesi (HMM, formant sentezi)     & D\"{u}\c{s}\"{u}k & H{\i}zl{\i} \\
+3. Neural         & Derin \"{o}\u{g}renme tabanlı (WaveNet, Tacotron, VITS)   & Y\"{u}ksek & De\u{g}i\c{s}ken \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+LocoDex, 3.~nesil neural TTS kullanır: \textbf{Cartesia Sonic} modeli, Together AI API \"{u}zerinden eri\c{s}ilir.
+
+\subsection{Neural TTS Mimarisi}
+
+Modern neural TTS sistemleri iki ana bile\c{s}enden olu\c{s}ur:
+
+\subsubsection{1. Acoustic Model (Akustik Model)}
+
+Metin dizisini akustik temsile (genellikle Mel spectrogram) d\"{o}n\"{u}\c{s}t\"{u}r\"{u}r:
+
+\begin{equation}
+\label{eq:acoustic_model}
+f_{\text{acoustic}} : \mathcal{T} \to \mathbf{M} \in \mathbb{R}^{F \times T}
+\end{equation}
+burada $\mathcal{T}$ metin (token dizisi), $\mathbf{M}$ Mel spectrogram, $F$ frekans band{\i} say{\i}s{\i} (genellikle 80 veya 128), $T$ zaman \c{c}er\c{c}evesi say{\i}s{\i}d{\i}r.
+
+\subsubsection{2. Vocoder}
+
+Mel spectrogram'dan dalga formu (waveform) \"{u}retir:
+
+\begin{equation}
+\label{eq:vocoder}
+f_{\text{vocoder}} : \mathbf{M} \in \mathbb{R}^{F \times T} \to \mathbf{x} \in \mathbb{R}^{L}
+\end{equation}
+burada $\mathbf{x}$ ses dalga formu, $L$ \"{o}rnek say{\i}s{\i}d{\i}r ($L = T \times \text{hop\_length}$).
+
+% --- TikZ: TTS Pipeline ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1cm and 0.5cm,
+  block/.style={
+    rectangle, rounded corners=2pt,
+    draw=codePurple!60, fill=codeBG, text=textWhite,
+    minimum width=2.8cm, minimum height=0.8cm,
+    font=\small, text centered
+  },
+  data/.style={
+    rectangle,
+    draw=codeGreen!40, fill=codeBG, text=codeGreen,
+    minimum width=2.2cm, minimum height=0.6cm,
+    font=\scriptsize, text centered
+  },
+  arrow/.style={->, >=stealth, thick, color=sectionBlue}
+]
+
+\node[data] (text) {Metin};
+\node[block, right=of text] (tokenizer) {Tokenizer};
+\node[data, right=of tokenizer] (tokens) {Token dizisi};
+\node[block, right=of tokens] (encoder) {Text Encoder};
+\node[data, below=0.6cm of encoder] (hidden) {Gizli temsil $\mathbf{h}$};
+\node[block, below=0.6cm of hidden] (decoder) {Mel Decoder};
+\node[data, below=0.6cm of decoder] (mel) {Mel Spectrogram};
+\node[block, below=0.6cm of mel] (vocoder) {Vocoder};
+\node[data, below=0.6cm of vocoder] (audio) {Ses dalga formu};
+
+\draw[arrow] (text) -- (tokenizer);
+\draw[arrow] (tokenizer) -- (tokens);
+\draw[arrow] (tokens) -- (encoder);
+\draw[arrow] (encoder) -- (hidden);
+\draw[arrow] (hidden) -- (decoder);
+\draw[arrow] (decoder) -- (mel);
+\draw[arrow] (mel) -- (vocoder);
+\draw[arrow] (vocoder) -- (audio);
+
+% Yan etiketler
+\node[font=\tiny\color{warnOrange}, left=0.3cm of decoder] {Acoustic Model};
+\node[font=\tiny\color{warnOrange}, left=0.3cm of vocoder] {Neural Vocoder};
+
+\end{tikzpicture}
+\caption{Neural TTS pipeline: metin $\to$ token $\to$ gizli temsil $\to$ Mel spectrogram $\to$ dalga formu.}
+\label{fig:tts_pipeline}
+\end{figure}
+
+
+% ============================================================
+\section{Mel Spectrogram: Frekans--Mel \"{O}l\c{c}e\u{g}i D\"{o}n\"{u}\c{s}\"{u}m\"{u}}
+\label{sec:mel_spectrogram}
+% ============================================================
+
+\subsection{\.{I}nsan \.{I}\c{s}itme Alg{\i}s{\i} ve Mel \"{O}l\c{c}e\u{g}i}
+
+\.{I}nsan kula\u{g}{\i} frekans{\i} logaritmik alg{\i}lar: 100\,Hz ile 200\,Hz aras{\i}ndaki fark, 5000\,Hz ile 5100\,Hz aras{\i}ndaki farktan \c{c}ok daha belirgindir. Bu, \emph{psikoakustik} alg{\i}n{\i}n logaritmik do\u{g}as{\i}ndan kaynaklan{\i}r.
+
+Mel \"{o}l\c{c}e\u{g}i, bu alg{\i}sal \"{o}zelli\u{g}i yakalar:
+
+\begin{formulbox}[Mel \"{O}l\c{c}e\u{g}i D\"{o}n\"{u}\c{s}\"{u}m\"{u}]
+\begin{equation}
+\label{eq:mel_scale}
+m = 2595 \times \log_{10}\!\left(1 + \frac{f}{700}\right)
+\end{equation}
+
+Ters d\"{o}n\"{u}\c{s}\"{u}m:
+\begin{equation}
+\label{eq:mel_inverse}
+f = 700 \times \left(10^{m/2595} - 1\right)
+\end{equation}
+\end{formulbox}
+
+\textbf{T\"{u}retme:} Mel \"{o}l\c{c}e\u{g}i O'Shaughnessy (1987) taraf{\i}ndan \"{o}nerilmi\c{s}tir. Form\"{u}l, d\"{u}\c{s}\"{u}k frekanslarda ($f \ll 700$) yakla\c{s}{\i}k olarak lineer, y\"{u}ksek frekanslarda ($f \gg 700$) logaritmik davran{\i}r:
+
+\begin{align}
+f \ll 700 &: \quad m \approx 2595 \times \frac{f}{700 \ln 10} = \frac{2595}{700 \times 2.303} \cdot f \approx 1.61 \cdot f \label{eq:mel_linear} \\
+f \gg 700 &: \quad m \approx 2595 \times \log_{10}\!\left(\frac{f}{700}\right) \label{eq:mel_log}
+\end{align}
+
+\begin{ornek}
+Baz{\i} kritik frekanslar{\i}n Mel kar\c{s}{\i}l{\i}klar{\i}:
+\end{ornek}
+
+\begin{table}[H]
+\centering
+\caption{Frekans--Mel d\"{o}n\"{u}\c{s}\"{u}m \"{o}rnekleri}
+\label{tab:mel_examples}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{ccl}
+\toprule
+\color{chapterBlue}\textbf{$f$ (Hz)} & \color{chapterBlue}\textbf{$m$ (Mel)} & \color{chapterBlue}\textbf{A\c{c}{\i}klama} \\
+\midrule
+0      & 0       & Sessizlik \\
+100    & 150.5   & D\"{u}\c{s}\"{u}k erkek sesi \\
+440    & 549.6   & A4 notas{\i} (akort referans{\i}) \\
+1000   & 999.8   & Referans noktas{\i} ($\approx 1000$ Mel) \\
+4000   & 2146.1  & \"{U}st konu\c{s}ma frekans{\i} \\
+8000   & 2840.0  & Y\"{u}ksek frekans s{\i}n{\i}r{\i} \\
+22050  & 3816.9  & Nyquist ($f_s = 44100$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Mel Filterbank Olu\c{s}turma}
+
+Mel spectrogram hesaplamak i\c{c}in \"{o}nce Short-Time Fourier Transform (STFT) uygulan{\i}r, sonra Mel filterbank ile frekans ekseni Mel \"{o}l\c{c}e\u{g}ine d\"{o}n\"{u}\c{s}t\"{u}r\"{u}l\"{u}r.
+
+\textbf{Ad{\i}m 1:} STFT uygula:
+\begin{equation}
+\label{eq:stft}
+X(n, k) = \sum_{m=0}^{N-1} x(n \cdot H + m) \cdot w(m) \cdot e^{-j2\pi km/N}
+\end{equation}
+burada $w(m)$ pencere fonksiyonu (genellikle Hann), $N$ FFT boyutu, $H$ hop length'tir.
+
+G\"{u}\c{c} spektrumu:
+\begin{equation}
+\label{eq:power_spectrum}
+P(n, k) = |X(n, k)|^2
+\end{equation}
+
+\textbf{Ad{\i}m 2:} Mel filterbank'i olu\c{s}tur. $F$ adet \"{u}\c{c}gen filtre, Mel \"{o}l\c{c}e\u{g}inde e\c{s}it aral{\i}kl{\i} yerle\c{s}tirilir:
+\begin{equation}
+\label{eq:mel_filter}
+H_f(k) = \begin{cases}
+0 & k < k_{f-1} \\[4pt]
+\dfrac{k - k_{f-1}}{k_f - k_{f-1}} & k_{f-1} \leq k < k_f \\[6pt]
+\dfrac{k_{f+1} - k}{k_{f+1} - k_f} & k_f \leq k < k_{f+1} \\[4pt]
+0 & k \geq k_{f+1}
+\end{cases}
+\end{equation}
+
+\textbf{Ad{\i}m 3:} Mel spectrogram (log \"{o}l\c{c}ekli):
+\begin{equation}
+\label{eq:mel_spec}
+\text{MelSpec}(n, f) = \log\!\left(\sum_{k} H_f(k) \cdot P(n, k) + \epsilon\right)
+\end{equation}
+burada $\epsilon$ say{\i}sal kararl{\i}l{\i}k i\c{c}in k\"{u}\c{c}\"{u}k bir sabit ($\sim 10^{-10}$).
+
+% --- TikZ: Mel Filterbank ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=12cm, height=5cm,
+  xlabel={Frekans (Hz)},
+  ylabel={Filtre kazan{\i}m{\i}},
+  xmin=0, xmax=8000,
+  ymin=0, ymax=1.15,
+  grid=both,
+  grid style={draw=boxBorder!30},
+  axis background/.style={fill=codeBG},
+  axis line style={color=textWhite},
+  tick style={color=textWhite},
+  xlabel style={color=textWhite},
+  ylabel style={color=textWhite},
+  ticklabel style={color=textWhite},
+  legend style={at={(0.97,0.97)}, anchor=north east, fill=boxBG, text=textWhite, draw=boxBorder, font=\tiny},
+]
+
+% Ucgen filtreler (Mel olceginde esit aralikli, frekans olceginde siklasan)
+% Filtre merkezleri: 0, 133, 288, 468, 681, 933, 1234, 1596, 2032, 2562, 3206, 3990, 4950, 6122, 7558
+\addplot[color=chapterBlue, thick] coordinates {(0,0) (133,1) (288,0)};
+\addplot[color=sectionBlue, thick] coordinates {(133,0) (288,1) (468,0)};
+\addplot[color=chapterBlue, thick] coordinates {(288,0) (468,1) (681,0)};
+\addplot[color=sectionBlue, thick] coordinates {(468,0) (681,1) (933,0)};
+\addplot[color=chapterBlue, thick] coordinates {(681,0) (933,1) (1234,0)};
+\addplot[color=sectionBlue, thick] coordinates {(933,0) (1234,1) (1596,0)};
+\addplot[color=chapterBlue, thick] coordinates {(1234,0) (1596,1) (2032,0)};
+\addplot[color=sectionBlue, thick] coordinates {(1596,0) (2032,1) (2562,0)};
+\addplot[color=chapterBlue, thick] coordinates {(2032,0) (2562,1) (3206,0)};
+\addplot[color=sectionBlue, thick] coordinates {(2562,0) (3206,1) (3990,0)};
+\addplot[color=chapterBlue, thick] coordinates {(3206,0) (3990,1) (4950,0)};
+\addplot[color=sectionBlue, thick] coordinates {(3990,0) (4950,1) (6122,0)};
+\addplot[color=chapterBlue, thick] coordinates {(4950,0) (6122,1) (7558,0)};
+
+\end{axis}
+\end{tikzpicture}
+\caption{13 kanall{\i} Mel filterbank. D\"{u}\c{s}\"{u}k frekanslarda filtreler dar ve s{\i}k, y\"{u}ksek frekanslarda geni\c{s} ve seyrek yerle\c{s}ir.}
+\label{fig:mel_filterbank}
+\end{figure}
+
+
+% ============================================================
+\section{Nyquist--Shannon \"{O}rnekleme Teoremi}
+\label{sec:nyquist}
+% ============================================================
+
+\subsection{Teorem}
+
+\begin{formulbox}[Nyquist--Shannon \"{O}rnekleme Teoremi]
+Bir s\"{u}rekli sinyalin bant s{\i}n{\i}rl{\i} oldu\u{g}unu ve maksimum frekans bile\c{s}eninin $f_{\max}$ oldu\u{g}unu varsayal{\i}m. Bu sinyal, \"{o}rnekleme frekans{\i} $f_s$ ile kay{\i}ps{\i}z olarak yeniden \"{u}retilebilir ancak ve ancak:
+\begin{equation}
+\label{eq:nyquist}
+f_s \geq 2 \cdot f_{\max}
+\end{equation}
+
+$f_N = f_s / 2$ de\u{g}erine \textbf{Nyquist frekans{\i}} denir. $f_{\max} > f_N$ olan bile\c{s}enler \textbf{aliasing}'e u\u{g}rar.
+\end{formulbox}
+
+\textbf{T\"{u}retme (sezgisel):}
+
+S\"{u}rekli bir sinyal $x(t)$'yi $T_s = 1/f_s$ aral{\i}klarla \"{o}rnekleyelim: $x[n] = x(n \cdot T_s)$.
+
+Fourier d\"{o}n\"{u}\c{s}\"{u}m\"{u}nde \"{o}rnekleme, spektrumun $f_s$ periyodlarla tekrarlanmas{\i}na yol a\c{c}ar:
+\begin{equation}
+\label{eq:sampling_spectrum}
+X_s(f) = \frac{1}{T_s} \sum_{k=-\infty}^{\infty} X(f - k \cdot f_s)
+\end{equation}
+
+E\u{g}er $f_{\max} > f_s/2$ ise, tekrarlanan spektrum kopyalar{\i} \"{u}st \"{u}ste biner --- bu \textbf{aliasing}'dir. $f_s \geq 2 f_{\max}$ ko\c{s}ulu sa\u{g}land{\i}\u{g}{\i}nda kopyalar ayr{\i}\c{s}{\i}r ve orijinal sinyal geri kazan{\i}l{\i}r.
+
+\subsection{Neden $f_s = 44{,}100$\,Hz?}
+
+\begin{kodref}{podcast.py L49}
+\texttt{sample\_rate: 44100} --- Cartesia Sonic API'ye g\"{o}nderilen \"{o}rnekleme h{\i}z{\i}
+\end{kodref}
+
+\.{I}nsan kula\u{g}{\i}n{\i}n duyabildi\u{g}i maksimum frekans $f_{\max} \approx 20{,}000$\,Hz'dir (gen\c{c} bireyler). Nyquist teoremine g\"{o}re:
+
+\begin{equation}
+\label{eq:nyquist_audio}
+f_s \geq 2 \times 20{,}000 = 40{,}000 \text{\,Hz}
+\end{equation}
+
+$44{,}100$\,Hz de\u{g}eri $40{,}000$\,Hz minimum{\i}n \"{u}st\"{u}ndedir. Ekstra \%10 pay, anti-aliasing filtresinin ge\c{c}i\c{s} band{\i}n{\i} rahatlatmak i\c{c}indir. Tarihsel k\"{o}keni, Sony/Philips'in CD standard{\i}n{\i} belirlerken video donan{\i}m{\i} \"{u}zerinden ses kaydetme ihtiyac{\i}ndan gelir (PAL: $294 \times 50 \times 3 = 44{,}100$; NTSC: $245 \times 60 \times 3 = 44{,}100$).
+
+\begin{ornek}
+$f_s = 44{,}100$\,Hz ile Nyquist frekans{\i} $f_N = 22{,}050$\,Hz. \.{I}nsan konu\c{s}mas{\i}n{\i}n temel frekans aral{\i}\u{g}{\i} 85--300\,Hz, harmonikleri 4\,kHz'e kadar. Yani $44{,}100$\,Hz konu\c{s}ma i\c{c}in fazlas{\i}yla yeterli. Asl{\i}nda telefon kalitesi ($f_s = 8{,}000$\,Hz, $f_N = 4{,}000$\,Hz) bile anla\c{s}{\i}l{\i}r konu\c{s}ma sa\u{g}lar.
+\end{ornek}
+
+% --- TikZ: Aliasing Gosterimi ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=12cm, height=5cm,
+  xlabel={Frekans (Hz)},
+  ylabel={Genlik $|X(f)|$},
+  xmin=-60000, xmax=60000,
+  ymin=0, ymax=1.3,
+  grid=both,
+  grid style={draw=boxBorder!30},
+  axis background/.style={fill=codeBG},
+  axis line style={color=textWhite},
+  tick style={color=textWhite},
+  xlabel style={color=textWhite},
+  ylabel style={color=textWhite},
+  ticklabel style={color=textWhite, font=\tiny},
+  xtick={-44100,-22050,0,22050,44100},
+  xticklabels={$-f_s$, $-f_N$, $0$, $f_N$, $f_s$},
+  legend style={at={(0.97,0.97)}, anchor=north east, fill=boxBG, text=textWhite, draw=boxBorder, font=\scriptsize},
+]
+
+% Orijinal spektrum (ucgen)
+\addplot[color=chapterBlue, thick, fill=chapterBlue!30!black] coordinates {
+  (-20000,0) (0,1) (20000,0)
+};
+\addlegendentry{Orijinal $X(f)$}
+
+% Tekrarlanan kopya sag
+\addplot[color=codeRed, thick, dashed, fill=codeRed!25!black] coordinates {
+  (24100,0) (44100,1) (64100,0)
+};
+\addlegendentry{Kopya $X(f - f_s)$}
+
+% Tekrarlanan kopya sol
+\addplot[color=codeRed, thick, dashed, fill=codeRed!25!black] coordinates {
+  (-64100,0) (-44100,1) (-24100,0)
+};
+
+% Nyquist cizgileri
+\addplot[color=codeGreen, dashed] coordinates {(22050,0) (22050,1.2)};
+\addplot[color=codeGreen, dashed] coordinates {(-22050,0) (-22050,1.2)};
+\node[color=codeGreen, font=\tiny, anchor=south] at (axis cs:22050,1.2) {$f_N$};
+
+\end{axis}
+\end{tikzpicture}
+\caption{\"{O}rnekleme sonras{\i} spektrum tekrar{\i}. Mavi: orijinal sinyal, k{\i}rm{\i}z{\i}: tekrarlanan kopyalar. $f_s = 44{,}100$\,Hz ile kopyalar \"{u}st \"{u}ste binmez (aliasing yok).}
+\label{fig:aliasing}
+\end{figure}
+
+\subsection{Aliasing \"{O}rne\u{g}i}
+
+\begin{ornek}
+$f_{\text{sinyal}} = 18{,}000$\,Hz saf sinüs, $f_s = 22{,}000$\,Hz ile \"{o}rneklensin ($f_N = 11{,}000$\,Hz):
+\[
+f_{\text{alias}} = |f_{\text{sinyal}} - f_s| = |18{,}000 - 22{,}000| = 4{,}000\text{\,Hz}
+\]
+18\,kHz sinyal, $4$\,kHz sinyal olarak alg{\i}lan{\i}r --- bu aliasing'dir! $f_s = 44{,}100$\,Hz olsayd{\i}: $f_N = 22{,}050 > 18{,}000$, aliasing olu\c{s}mazd{\i}.
+\end{ornek}
+
+\subsection{Dijital Ses Formatlar{\i} ve Bit Derinli\u{g}i}
+
+Bir dijital ses dosyas{\i}n{\i}n boyutu:
+\begin{equation}
+\label{eq:audio_size}
+\text{Boyut (byte)} = f_s \times B \times C \times D
+\end{equation}
+burada $B$ byte/\"{o}rnek (bit derinli\u{g}i/8), $C$ kanal say{\i}s{\i}, $D$ s\"{u}re (saniye).
+
+\begin{ornek}
+1 dakikal{\i}k mono PCM float32 ses: $44{,}100 \times 4 \times 1 \times 60 = 10{,}584{,}000$ byte $\approx 10.1$\,MB.
+
+MP3 s{\i}k{\i}\c{s}t{\i}rma ile (128\,kbps): $128{,}000 \times 60 / 8 = 960{,}000$ byte $\approx 0.96$\,MB. S{\i}k{\i}\c{s}t{\i}rma oran{\i}: $\sim$11:1.
+\end{ornek}
+
+
+% ============================================================
+\section{Cartesia Sonic Model ve Voice Embedding}
+\label{sec:cartesia}
+% ============================================================
+
+\subsection{Model Mimarisi}
+
+Cartesia Sonic, neural TTS alan{\i}nda ``streaming-first'' yakla\c{s}{\i}m{\i}yla tasarlanm{\i}\c{s} bir modeldir. Together AI API \"{u}zerinden kullan{\i}l{\i}r:
+
+\begin{kodref}{podcast.py L40--55}
+\begin{lstlisting}[caption={Cartesia Sonic API \c{c}a\u{g}r{\i}s{\i}}]
+data = {
+    "input": "-" + text,     # Tire: hafif duraklama
+    "voice": voice,           # "laidback woman" veya
+                              # "customer support man"
+    "response_format": "mp3", # Dogrudan MP3
+    "sample_rate": 44100,
+    "stream": False,
+    "model": "cartesia/sonic",
+}
+response = requests.post(url, headers=headers, json=data)
+return response.content  # MP3 bytes
+\end{lstlisting}
+\end{kodref}
+
+\subsection{Voice Embedding Space}
+
+Her ses kimli\u{g}i (voice), y\"{u}ksek boyutlu bir vekt\"{o}r uzay{\i}nda bir nokta olarak temsil edilir:
+
+\begin{equation}
+\label{eq:voice_embedding}
+\mathbf{v}_{\text{voice}} \in \mathbb{R}^{d}, \quad d \sim 128\text{--}512
+\end{equation}
+
+\.{I}ki ses kimli\u{g}i aras{\i}ndaki benzerlik, cosine similarity ile \"{o}l\c{c}\"{u}l\"{u}r:
+\begin{equation}
+\label{eq:cosine_sim}
+\text{sim}(\mathbf{v}_1, \mathbf{v}_2) = \frac{\mathbf{v}_1 \cdot \mathbf{v}_2}{\|\mathbf{v}_1\| \cdot \|\mathbf{v}_2\|}
+\end{equation}
+
+LocoDex'te iki sabit ses kimli\u{g}i kullan{\i}l{\i}r:
+
+\begin{table}[H]
+\centering
+\caption{Kullan{\i}lan ses kimlikleri}
+\label{tab:voices}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{Ses} & \color{chapterBlue}\textbf{Kullan{\i}m} & \color{chapterBlue}\textbf{Rol} \\
+\midrule
+\texttt{laidback woman}       & Rahat, sohbet tonu & Host \\
+\texttt{customer support man} & Net, a\c{c}{\i}klay{\i}c{\i}  & Guest \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+\section{Script Generation: LLM Diyalog \"{U}retimi}
+\label{sec:script_generation}
+% ============================================================
+
+\subsection{Pydantic Schema Validation}
+
+Script \"{u}retimi, LLM'den yap{\i}land{\i}r{\i}lm{\i}\c{s} (structured) JSON \c{c}{\i}kt{\i} al{\i}r. Pydantic schema, \c{c}{\i}kt{\i} format{\i}n{\i} zorlar:
+
+\begin{kodref}{podcast.py L27--33}
+\begin{lstlisting}[caption={Script Pydantic modelleri}]
+class LineItem(BaseModel):
+    speaker: Literal["Host", "Guest"]
+    text: str
+
+class Script(BaseModel):
+    script_data: List[LineItem]
+\end{lstlisting}
+\end{kodref}
+
+LLM \c{c}a\u{g}r{\i}s{\i}nda \texttt{response\_format} parametresi JSON schema'y{\i} zorlar:
+
+\begin{lstlisting}[caption={Structured output zorlamas{\i}}]
+response = single_shot_llm_call(
+    model="together_ai/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    system_prompt=system_prompt,
+    message=input_text,
+    response_format={
+        "type": "json_object",
+        "schema": Script.model_json_schema(),
+    },
+)
+llm_script = Script.model_validate_json(response)
+\end{lstlisting}
+
+\subsection{Host--Guest Turn-Taking Modeli}
+
+Podcast diyalogu, Host ve Guest aras{\i}nda s{\i}ra de\u{g}i\c{s}tirmeli (alternating turn-taking) yap{\i}dad{\i}r. Bu, bir \emph{finite state machine} olarak modellenebilir:
+
+\begin{equation}
+\label{eq:turn_taking}
+\text{State} \in \{\text{Host}, \text{Guest}\}, \quad \text{ge\c{c}i\c{s}: Host} \xrightarrow{\text{s\"{o}z}} \text{Guest} \xrightarrow{\text{s\"{o}z}} \text{Host} \xrightarrow{\text{s\"{o}z}} \cdots
+\end{equation}
+
+\begin{kodref}{podcast.py L13--24}
+Veri yap{\i}lar{\i}:
+\begin{lstlisting}[caption={Podcast veri yap{\i}lar{\i}}]
+@dataclass(frozen=True, kw_only=True)
+class PodcastDialogue:
+    speaker: str   # "Host" veya "Guest"
+    text: str
+
+@dataclass(frozen=True, kw_only=True)
+class PodcastScript:
+    title: str
+    host_voice: str
+    guest_voice: str
+    dialogue: List[PodcastDialogue]
+\end{lstlisting}
+\end{kodref}
+
+Diyalog uzunlu\u{g}u $n$ segment, her segment ortalama $\bar{w}$ kelime ise, toplam kelime say{\i}s{\i}:
+\begin{equation}
+\label{eq:dialogue_length}
+W_{\text{total}} = n \times \bar{w}
+\end{equation}
+
+Konu\c{s}ma h{\i}z{\i} $r_{\text{wpm}}$ (kelime/dakika, tipik $\sim$150\,wpm) ile podcast s\"{u}resi:
+\begin{equation}
+\label{eq:podcast_duration}
+D_{\text{podcast}} = \frac{W_{\text{total}}}{r_{\text{wpm}}} = \frac{n \cdot \bar{w}}{r_{\text{wpm}}} \quad (\text{dakika})
+\end{equation}
+
+\begin{ornek}
+$n = 20$ segment, $\bar{w} = 40$ kelime, $r_{\text{wpm}} = 150$:
+$D = 20 \times 40 / 150 = 5.3$\,dakika.
+\end{ornek}
+
+
+% ============================================================
+\section{Audio Segment Concatenation}
+\label{sec:audio_concat}
+% ============================================================
+
+\subsection{MP3 Bytearray Birle\c{s}tirme}
+
+Her diyalog segment'i i\c{c}in ayr{\i} bir TTS API \c{c}a\u{g}r{\i}s{\i} yap{\i}l{\i}r ve d\"{o}nen MP3 byte'lar{\i} \texttt{bytearray}'e eklenir:
+
+\begin{kodref}{podcast.py L58--85}
+\begin{lstlisting}[caption={Audio segment birle\c{s}tirme}]
+audio_data = bytearray()
+for line in script.dialogue:
+    voice = script.host_voice if line.speaker == "Host" \
+            else script.guest_voice
+    segment_audio = _generate_audio_segment(
+        line.text, voice)
+    audio_data.extend(segment_audio)
+return bytes(audio_data)
+\end{lstlisting}
+\end{kodref}
+
+\begin{dikkat}
+MP3 dosyalar{\i}n{\i}n basit\c{c}e \texttt{extend()} ile birle\c{s}tirilmesi teknik olarak \emph{sorunlu} olabilir. MP3 format{\i} \c{c}er\c{c}eve (frame) tabanl{\i}d{\i}r ve her \c{c}er\c{c}eve ba\u{g}{\i}ms{\i}zd{\i}r --- bu nedenle basit birle\c{s}tirme genellikle \c{c}al{\i}\c{s}{\i}r. Ancak \c{s}u sorunlar olu\c{s}abilir:
+\begin{itemize}
+  \item Segment ge\c{c}i\c{s}lerinde ``pop'' veya ``click'' sesleri (s\"{u}reksizlik)
+  \item Bit rate de\u{g}i\c{s}ikli\u{g}i (Variable Bit Rate, VBR) durumunda \c{c}alan yazılımda s\"{u}re hatas{\i}
+  \item ID3 tag'lerinin tekrarlanmas{\i}
+\end{itemize}
+\end{dikkat}
+
+\subsection{Toplam API \c{C}a\u{g}r{\i} Analizi}
+
+$n$ diyalog segment'i i\c{c}in:
+\begin{equation}
+\label{eq:api_calls}
+\text{API \c{c}a\u{g}r{\i} say{\i}s{\i}} = n \quad (\text{her segment i\c{c}in 1 TTS \c{c}a\u{g}r{\i}s{\i}})
+\end{equation}
+
+Ortalama TTS API s\"{u}resi $T_{\text{tts}}$ ise:
+\begin{equation}
+\label{eq:tts_total_time}
+T_{\text{audio}} = n \times T_{\text{tts}} \quad (\text{seri \c{c}al{\i}\c{s}ma})
+\end{equation}
+
+\begin{ornek}
+$n = 20$, $T_{\text{tts}} = 2$\,s $\Rightarrow$ $T_{\text{audio}} = 40$\,s. Paralelle\c{s}tirilirse ($N$ e\c{s} zamanl{\i} \c{c}a\u{g}r{\i}): $T_{\text{audio,par}} = \lceil n/N \rceil \times T_{\text{tts}}$.
+\end{ornek}
+
+
+% ============================================================
+\section{PCM $\to$ WAV D\"{o}n\"{u}\c{s}\"{u}m\"{u}: ffmpeg Pipeline}
+\label{sec:pcm_wav}
+% ============================================================
+
+Cartesia Sonic API genellikle MP3 d\"{o}nd\"{u}r\"{u}r, ancak ham PCM format{\i}nda da veri gelebilir. Bu durumda ffmpeg ile d\"{o}n\"{u}\c{s}\"{u}m gerekir:
+
+\begin{kodref}{podcast.py L153--182}
+\begin{lstlisting}[caption={PCM $\to$ WAV d\"{o}n\"{u}\c{s}\"{u}m\"{u}}]
+cmd = [
+    "ffmpeg",
+    "-y",                 # Uzerine yaz
+    "-f", "f32le",        # Giris: 32-bit float PCM
+    "-ar", str(sample_rate),  # Ornekleme hizi
+    "-ac", "1",           # Mono
+    "-i", pcm_file.name,  # Giris dosyasi
+    wav_file.name          # Cikis dosyasi
+]
+result = subprocess.run(cmd, capture_output=True)
+\end{lstlisting}
+\end{kodref}
+
+\textbf{Format a\c{c}{\i}klamalar{\i}:}
+
+\begin{itemize}
+  \item \texttt{f32le}: 32-bit floating-point, little-endian. Her \"{o}rnek 4~byte, de\u{g}er aral{\i}\u{g}{\i} $[-1.0, 1.0]$.
+  \item \texttt{-ac 1}: Mono kanal. Stereo ($C=2$) yerine tek kanal --- podcast i\c{c}in yeterli.
+  \item WAV format{\i}: RIFF header (44~byte) + PCM verisi. S{\i}k{\i}\c{s}t{\i}rmas{\i}z.
+\end{itemize}
+
+PCM float32le format{\i}n{\i}n bit d\"{u}zeni:
+\begin{equation}
+\label{eq:float32}
+\underbrace{b_{31}}_{\text{i\c{s}aret}} \underbrace{b_{30} \ldots b_{23}}_{\text{\"{u}stel (8 bit)}} \underbrace{b_{22} \ldots b_0}_{\text{mantis (23 bit)}}
+\end{equation}
+
+De\u{g}er: $(-1)^{b_{31}} \times 2^{(\text{\"{u}stel} - 127)} \times (1 + \text{mantis}/2^{23})$.
+
+Dinamik aral{\i}k: $\sim$1529\,dB (teorik), pratikte ses i\c{c}in $[-1.0, 1.0]$ normalizasyonu kullan{\i}l{\i}r. Bit derinli\u{g}i dinamik aral{\i}\u{g}{\i}n{\i} belirler:
+
+\begin{equation}
+\label{eq:dynamic_range}
+\text{DR (dB)} \approx 6.02 \times B_{\text{bit}} + 1.76
+\end{equation}
+
+\begin{ornek}
+16-bit PCM: $\text{DR} = 6.02 \times 16 + 1.76 = 98.1$\,dB (CD kalitesi). 32-bit float: pratikte $\sim$144\,dB (24-bit efektif mantis).
+\end{ornek}
+
+
+% ============================================================
+\section{Base64 Encoding ve Dosya Y\"{o}netimi}
+\label{sec:base64}
+% ============================================================
+
+\subsection{Base64 Kodlama}
+
+Base64, binary veriyi ASCII metin olarak temsil eden bir kodlama \c{s}emas{\i}d{\i}r (RFC~4648). Her 3~byte (24~bit) binary veri, 4~karakter (32~bit) ASCII'ye d\"{o}n\"{u}\c{s}t\"{u}r\"{u}l\"{u}r:
+
+\begin{formulbox}[Base64 Boyut Art{\i}\c{s}{\i}]
+\begin{equation}
+\label{eq:base64_overhead}
+\text{Boyut}_{\text{Base64}} = \left\lceil \frac{4}{3} \cdot \text{Boyut}_{\text{binary}} \right\rceil \approx 1.333 \times \text{Boyut}_{\text{binary}}
+\end{equation}
+Yani \%33.3 boyut art{\i}\c{s}{\i}.
+\end{formulbox}
+
+\textbf{Neden Base64?} HTML ve JSON gibi metin tabanl{\i} formatlar binary veri ta\c{s}{\i}yamaz. Data URL \c{s}emas{\i}:
+
+\begin{kodref}{podcast.py L185--196}
+\begin{lstlisting}[caption={Base64 audio d\"{o}n\"{u}\c{s}\"{u}m\"{u}}]
+def get_base64_audio(audio_bytes: bytes) -> str:
+    encoded = base64.b64encode(audio_bytes)
+                    .decode('utf-8')
+    return f"data:audio/mp3;base64,{encoded}"
+\end{lstlisting}
+\end{kodref}
+
+\textbf{Kodlama algoritmas{\i}:}
+\begin{enumerate}
+  \item Binary veriyi 6-bit gruplar{\i}na b\"{o}l
+  \item Her 6-bit de\u{g}eri (0--63) bir ASCII karaktere e\c{s}le: \texttt{A--Z} (0--25), \texttt{a--z} (26--51), \texttt{0--9} (52--61), \texttt{+} (62), \texttt{/} (63)
+  \item Girdi 3'e b\"{o}l\"{u}nmezse \texttt{=} padding ekle
+\end{enumerate}
+
+\begin{ornek}
+``Hi'' (2~byte: \texttt{0x48 0x69}) kodlamas{\i}:
+\begin{align*}
+\text{Binary:}  &\quad 01001000\ 01101001 \\
+\text{6-bit gruplar:}  &\quad 010010\ 000110\ 1001\underbrace{00}_{\text{pad}} \\
+\text{De\u{g}erler:}  &\quad 18,\quad 6,\quad 36 \\
+\text{Karakterler:}  &\quad \texttt{S},\quad \texttt{G},\quad \texttt{k} \\
+\text{Sonu\c{c}:}  &\quad \texttt{SGk=}
+\end{align*}
+\end{ornek}
+
+\subsection{HTML G\"{o}m\"{u}lme}
+
+Podcast audio'su HTML sayfas{\i}na Data URL olarak g\"{o}m\"{u}l\"{u}r:
+
+\begin{kodref}{podcast.py L199--251}
+\begin{lstlisting}[caption={HTML i\c{c}ine audio g\"{o}m\"{u}lmesi}, language=HTML]
+<audio controls>
+  <source src="data:audio/mp3;base64,{encoded}"
+          type="audio/mp3">
+</audio>
+\end{lstlisting}
+\end{kodref}
+
+\begin{dikkat}
+Base64 g\"{o}m\"{u}l\"{u} audio, HTML dosyas{\i}n{\i}n boyutunu b\"{u}y\"{u}k \"{o}l\c{c}\"{u}de art{\i}r{\i}r. 5~dakikal{\i}k MP3 (128\,kbps): $5 \times 60 \times 128{,}000 / 8 = 4{,}800{,}000$\,byte $\approx 4.8$\,MB. Base64 sonras{\i}: $\sim$6.4\,MB. Bu boyutta HTML dosyas{\i} taray{\i}c{\i}da a\c{c}{\i}l{\i}rken yava\c{s}lama yaratabilir.
+\end{dikkat}
+
+\subsection{Dosya Kaydetme Stratejisi}
+
+LocoDex iki \c{c}{\i}kt{\i} y\"{o}ntemi sunar:
+
+\begin{enumerate}
+  \item \textbf{HTML embed:} \texttt{save\_podcast\_html()} --- audio Base64 olarak HTML'e g\"{o}m\"{u}l\"{u}r, transcript ile birlikte
+  \item \textbf{Raw MP3:} \texttt{save\_podcast\_to\_disk()} --- ham MP3 dosya olarak kaydedilir
+\end{enumerate}
+
+\begin{kodref}{podcast.py L254--270}
+\begin{lstlisting}[caption={MP3 dosyaya kaydetme}]
+def save_podcast_to_disk(audio_bytes, output_path):
+    os.makedirs(os.path.dirname(
+        os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+    return output_path
+\end{lstlisting}
+\end{kodref}
+
+
+% ============================================================
+\section{G\"{u}venli Dosya Adland{\i}rma (Safe Filename)}
+\label{sec:safe_filename}
+% ============================================================
+
+\subsection{\.{I}\c{s}letim Sistemi K{\i}s{\i}tlamalar{\i}}
+
+Dosya adlar{\i}nda ge\c{c}ersiz karakterler i\c{s}letim sistemine g\"{o}re de\u{g}i\c{s}ir:
+
+\begin{table}[H]
+\centering
+\caption{\.{I}\c{s}letim sistemi dosya ad{\i} k{\i}s{\i}tlamalar{\i}}
+\label{tab:filename_restrictions}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\color{chapterBlue}\textbf{\.{I}S} & \color{chapterBlue}\textbf{Ge\c{c}ersiz Karakterler} & \color{chapterBlue}\textbf{Maks.\ Uzunluk} \\
+\midrule
+Windows & \texttt{< > : " / \textbackslash\ | ? *}  & 260 (MAX\_PATH) \\
+macOS   & \texttt{/ :}                               & 255 (HFS+) \\
+Linux   & \texttt{/} ve null (\texttt{\textbackslash 0}) & 255 (ext4) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{kodref}{path\_utils.py L148--171}
+\begin{lstlisting}[caption={G\"{u}venli dosya ad{\i} \"{u}retimi}]
+@staticmethod
+def create_safe_filename(text, max_length=50):
+    invalid_chars = '<>:"/\\|?*'
+    safe_text = ''.join(c for c in text
+                        if c not in invalid_chars)
+    safe_text = safe_text.replace(' ', '_')
+    safe_text = ''.join(c for c in safe_text
+                        if ord(c) >= 32)  # Kontrol kr.
+    if len(safe_text) > max_length:
+        safe_text = safe_text[:max_length]
+    safe_text = safe_text.rstrip('.')  # Windows
+    if not safe_text:
+        safe_text = 'untitled'
+    return safe_text
+\end{lstlisting}
+\end{kodref}
+
+Zaman karma\c{s}{\i}kl{\i}\u{g}{\i}:
+\begin{equation}
+\label{eq:safe_filename_complexity}
+T_{\text{safe}} = \mathcal{O}(n \cdot k)
+\end{equation}
+burada $n$ metin uzunlu\u{g}u, $k = 9$ ge\c{c}ersiz karakter say{\i}s{\i}. Pratikte $\mathcal{O}(n)$.
+
+\subsection{Timestamp Tabanl{\i} Adland{\i}rma}
+
+\c{C}ak{\i}\c{s}ma \"{o}nleme (\textit{collision avoidance}) i\c{c}in zaman damgas{\i} kullan{\i}l{\i}r:
+
+\begin{kodref}{path\_utils.py L174--184}
+\begin{lstlisting}[caption={Timestamp tabanl{\i} dosya ad{\i}}]
+def get_research_file_path(topic, timestamp=None):
+    if timestamp is None:
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f")
+    safe_topic = PlatformPaths.create_safe_filename(topic)
+    filename = f"{timestamp}_{safe_topic}.md"
+    return PlatformPaths.get_research_results_dir() \
+           / filename
+\end{lstlisting}
+\end{kodref}
+
+Zaman damgas{\i} format{\i}: \texttt{20260315\_183000\_123456}. Mikrosaniye (\texttt{\%f}) dahildir. \c{C}ak{\i}\c{s}ma olas{\i}l{\i}\u{g}{\i}:
+\begin{equation}
+\label{eq:collision_prob}
+P(\text{\c{c}ak{\i}\c{s}ma}) = \frac{1}{10^6} \quad (\text{ayn{\i} saniye i\c{c}inde iki kay{\i}t})
+\end{equation}
+
+\subsection{\c{C}ift Kay{\i}t Stratejisi (Redundancy)}
+
+LocoDex, ara\c{s}t{\i}rma sonu\c{c}lar{\i}n{\i} iki farkl{\i} konuma kaydeder:
+
+\begin{enumerate}
+  \item \textbf{Desktop:} Kullan{\i}c{\i}n{\i}n masa\"{u}st\"{u} (\texttt{get\_desktop\_dir()}) --- kolay eri\c{s}im
+  \item \textbf{research\_results:} Platform-spesifik veri dizini (\texttt{get\_research\_results\_dir()}) --- yedek
+\end{enumerate}
+
+Bu, basit bir \emph{redundancy} stratejisidir. G\"{u}venilirlik:
+\begin{equation}
+\label{eq:redundancy}
+P(\text{veri kayb{\i}}) = P(\text{disk1 hata}) \times P(\text{disk2 hata})
+\end{equation}
+
+Ayn{\i} disk \"{u}zerinde iki konum oldu\u{g}u i\c{c}in ba\u{g}{\i}ms{\i}zl{\i}k varsay{\i}m{\i} ge\c{c}erli de\u{g}il --- bu ger\c{c}ek redundancy de\u{g}il, sadece ``kullan{\i}c{\i} bir dosyay{\i} yanl{\i}\c{s}l{\i}kla silerse'' senaryosu i\c{c}in korumad{\i}r.
+
+\subsection{Cross-Platform Dizin Y\"{o}netimi}
+
+\begin{kodref}{path\_utils.py L31--53}
+\texttt{PlatformPaths.get\_base\_data\_dir()} fonksiyonu platforma g\"{o}re \"{u}\c{c} farkl{\i} yol d\"{o}nd\"{u}r\"{u}r:
+\end{kodref}
+
+\begin{table}[H]
+\centering
+\caption{Platforma g\"{o}re veri dizinleri}
+\label{tab:platform_dirs}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\color{chapterBlue}\textbf{Platform} & \color{chapterBlue}\textbf{Dizin} \\
+\midrule
+Windows & \texttt{\%APPDATA\%\textbackslash LocoDex} \\
+macOS   & \texttt{\textasciitilde /Library/Application Support/LocoDex} \\
+Linux   & \texttt{\$XDG\_DATA\_HOME/locodex} veya \texttt{\textasciitilde /.local/share/locodex} \\
+Docker  & \texttt{/app} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+\section{Encoding ve UTF-8}
+\label{sec:encoding}
+% ============================================================
+
+T\"{u}m dosya i\c{s}lemlerinde \texttt{encoding='utf-8'} belirtilir. UTF-8, Unicode karakterleri 1--4 byte ile kodlar:
+
+\begin{table}[H]
+\centering
+\caption{UTF-8 kodlama kurallar{\i}}
+\label{tab:utf8}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{ccc}
+\toprule
+\color{chapterBlue}\textbf{Unicode Aral{\i}\u{g}{\i}} & \color{chapterBlue}\textbf{Byte Say{\i}s{\i}} & \color{chapterBlue}\textbf{Bit Deseni} \\
+\midrule
+U+0000--007F & 1 & \texttt{0xxxxxxx} \\
+U+0080--07FF & 2 & \texttt{110xxxxx 10xxxxxx} \\
+U+0800--FFFF & 3 & \texttt{1110xxxx 10xxxxxx 10xxxxxx} \\
+U+10000--10FFFF & 4 & \texttt{11110xxx 10xxxxxx 10xxxxxx 10xxxxxx} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{ornek}
+T\"{u}rk\c{c}e karakter ``\c{s}'' (U+015F): 2~byte (\texttt{0xC5 0x9F}). ``\"{o}'' (U+00F6): 2~byte (\texttt{0xC3 0xB6}). ASCII ``a'' (U+0061): 1~byte (\texttt{0x61}).
+
+T\"{u}rk\c{c}e metin i\c{c}in ortalama byte/karakter $\approx 1.2$ (ASCII a\u{g}{\i}rl{\i}kl{\i}).
+\end{ornek}
+
+\textbf{BOM (Byte Order Mark) sorunu:} UTF-8 BOM (\texttt{0xEF 0xBB 0xBF}) baz{\i} Windows uygulamalar{\i} taraf{\i}ndan eklenir. LocoDex'te \texttt{encoding='utf-8'} kullan{\i}l{\i}r (\texttt{'utf-8-sig'} de\u{g}il), bu nedenle BOM eklenmez. Ancak BOM i\c{c}eren dosyalar okundu\u{g}unda ilk 3~byte at{\i}lmal{\i}d{\i}r.
+
+
+% ============================================================
+\section{S{\i}n{\i}rlamalar}
+\label{sec:podcast_limitations}
+% ============================================================
+
+\begin{enumerate}
+  \item \textbf{Sabit ses kimlikleri:} Sadece 2~ses mevcut (\texttt{laidback woman}, \texttt{customer support man}). \"{O}zel ses klonlama desteklenmez.
+  \item \textbf{Seri segment \"{u}retimi:} Her diyalog sat{\i}r{\i} seri olarak i\c{s}lenir. $n = 20$ segment i\c{c}in $\sim$40\,s.
+  \item \textbf{MP3 concatenation sorunu:} Segment birle\c{s}tirme \c{c}er\c{c}eve s{\i}n{\i}rlar{\i}n{\i} dikkate almaz --- ge\c{c}i\c{s}lerde artefaktlar olu\c{s}abilir.
+  \item \textbf{Base64 boyut art{\i}\c{s}{\i}:} \%33 overhead. Uzun podcast'ler i\c{c}in HTML dosyas{\i} \c{c}ok b\"{u}y\"{u}k olur.
+  \item \textbf{Dil s{\i}n{\i}rlamas{\i}:} Cartesia Sonic'in T\"{u}rk\c{c}e telaffuzu k{\i}s{\i}tl{\i}d{\i}r. Podcast'ler genellikle \.{I}ngilizce'dir.
+  \item \textbf{Prozodi kontrol\"{u} yok:} Vurgu, tonlama ve duraklamalar LLM prompt'undaki talimatlarla y\"{o}nlendirilir, ama TTS motoru \"{u}zerinde do\u{g}rudan kontrol yoktur.
+  \item \textbf{API ba\u{g}{\i}ml{\i}l{\i}\u{g}{\i}:} TTS \"{u}retimi Together AI API'ye ba\u{g}l{\i}d{\i}r. Lokal TTS deste\u{g}i yoktur.
+\end{enumerate}
+
+
+% ============================================================
+\begin{ozet}
+\begin{itemize}[leftmargin=1.5em]
+  \item Podcast pipeline 4 a\c{s}amadan olu\c{s}ur: Script Generation $\to$ Audio Synthesis $\to$ Concatenation $\to$ Encoding.
+  \item Mel spectrogram, $m = 2595 \log_{10}(1 + f/700)$ d\"{o}n\"{u}\c{s}\"{u}m\"{u}yle insan i\c{s}itme alg{\i}s{\i}n{\i} modeller.
+  \item Nyquist--Shannon teoremi: $f_s \geq 2 f_{\max}$ ko\c{s}ulu; $f_s = 44{,}100$\,Hz se\c{c}imi 20\,kHz insan i\c{s}itme s{\i}n{\i}r{\i}n{\i} kar\c{s}{\i}lar.
+  \item Script generation Pydantic schema validation ile yap{\i}land{\i}r{\i}lm{\i}\c{s} JSON \c{c}{\i}kt{\i} zorlar (Host/Guest turn-taking).
+  \item Audio birle\c{s}tirme basit \texttt{bytearray.extend()} ile MP3 frame concatenation kullan{\i}r.
+  \item PCM $\to$ WAV d\"{o}n\"{u}\c{s}\"{u}m\"{u} ffmpeg ile float32le format{\i}ndan yap{\i}l{\i}r; dinamik aral{\i}k $\approx 6B + 1.76$\,dB.
+  \item Base64 kodlama \%33 boyut art{\i}\c{s}{\i} getirir; HTML g\"{o}m\"{u}lme i\c{c}in gereklidir.
+  \item G\"{u}venli dosya adland{\i}rma $\mathcal{O}(n)$ karma\c{s}{\i}kl{\i}kla ge\c{c}ersiz karakterleri filtreler; timestamp ile \c{c}ak{\i}\c{s}ma \"{o}nlenir.
+  \item Cross-platform dizin y\"{o}netimi Windows/macOS/Linux/Docker i\c{c}in ayr{\i} yollar kullan{\i}r.
+\end{itemize}
+\end{ozet}

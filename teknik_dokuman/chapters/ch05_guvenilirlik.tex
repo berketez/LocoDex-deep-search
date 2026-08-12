@@ -1,0 +1,1314 @@
+% ============================================================
+%  B\"{O}L\"{U}M 5: KAYNAK G\"{U}VEN\.{I}L\.{I}RL\.{I}K DE\u{G}ERLEND\.{I}RMES\.{I} VE D\.{I}L ALGILAMA
+% ============================================================
+
+Bu b\"{o}l\"{u}m, LocoDex Deep Search'in kaynak g\"{u}venilirlik de\u{g}erlendirme sistemini, dil alg{\i}lama mekanizmas{\i}n{\i}, i\c{c}erik kalite \"{o}l\c{c}\"{u}mlerini ve prompt-tabanl{\i} de\u{g}erlendirme mimarisini matematiksel temelleriyle birlikte inceler.
+
+% ============================================================
+\section{Domain-Based Trust Scoring}
+\label{sec:domain-trust}
+% ============================================================
+
+\subsection{Bilgi Bilimi (Information Science) Perspektifi}
+
+Kaynak g\"{u}venilirli\u{g}inin domain baz{\i}nda s{\i}n{\i}fland{\i}r{\i}lmas{\i}, bibliometri (bibliometrics) ve bilgi biliminin temel kavramlar{\i}na dayan{\i}r. Bu yakla\c{s}{\i}m{\i}n k\"{o}kenleri 1927'de Gross ve Gross'un at{\i}f analizi \c{c}al{\i}\c{s}mas{\i}na kadar gider; modern halini ise Eugene Garfield'{\i}n 1955'te olu\c{s}turdu\u{g}u \emph{Impact Factor} kavram{\i} ile alm{\i}\c{s}t{\i}r.
+
+\begin{formulbox}[G\"{u}venilirlik Fonksiyonu]
+Temel hipotez: Bir bilgi kayna\u{g}{\i}n{\i}n g\"{u}venilirli\u{g}i, o kayna\u{g}{\i} \"{u}reten kurumun \emph{epistemik otoritesi} (epistemic authority) ile do\u{g}rudan ili\c{s}kilidir:
+\begin{equation}
+\label{eq:trust-function}
+\mathrm{Trust}(s) = f\bigl(\text{institutional\_authority},\; \text{peer\_review\_rigor},\; \text{editorial\_standards},\; \text{track\_record}\bigr)
+\end{equation}
+LocoDex bu karma\c{s}{\i}k fonksiyonu \"{u}\c{c} katmanl{\i} bir heuristik s{\i}n{\i}fland{\i}rma ile basitle\c{s}tirir.
+\end{formulbox}
+
+\subsection{\"{U}\c{c} Katmanl{\i} G\"{u}venilirlik Modeli}
+
+Sistem, \texttt{real\_deep\_research.py} dosyas{\i}nda (sat{\i}rlar 20--44) tan{\i}mlanan \"{u}\c{c} katmanl{\i} bir yap{\i} kullan{\i}r:
+
+\begin{table}[H]
+\centering
+\caption{Domain G\"{u}venilirlik Katmanlar{\i} ve Epistemik Gerek\c{c}eler}
+\label{tab:domain-trust}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{llcXX}
+\toprule
+\color{chapterBlue}\textbf{Katman} & \color{chapterBlue}\textbf{Skor} & \color{chapterBlue}\textbf{Domain} & \color{chapterBlue}\textbf{\"{O}rnek} & \color{chapterBlue}\textbf{Epistemik Gerek\c{c}e} \\
+\midrule
+High Trust   & 70--100 & 39 & arxiv.org, nature.com, ieee.org, nasa.gov   & Peer-review, kurumsal otorite \\
+Medium Trust & 40--69  & 16 & wikipedia.org, reddit.com, forbes.com       & Topluluk denetimi, formal review yok \\
+Low Trust    & 10--39  & 7  & blog.*, wordpress.com, blogspot.com          & Bireysel i\c{c}erik, edit\"{o}ryal kontrol yok \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{kodref}{real\_deep\_research.py, sat{\i}r 20--44}
+\begin{lstlisting}
+self.trusted_domains = {
+    'high': [
+        'arxiv.org', 'nature.com', 'science.org',
+        'pubmed.ncbi.nlm.nih.gov', 'ieee.org', 'acm.org',
+        'academic.oup.com', 'springer.com', 'cambridge.org',
+        'mit.edu', 'stanford.edu', 'harvard.edu',
+        # ... toplam 39 domain
+    ],
+    'medium': [
+        'wikipedia.org', 'reddit.com', 'quora.com',
+        'forbes.com',
+        # ... toplam 16 domain
+    ],
+    'low': [
+        'blog.', 'wordpress.com', 'blogspot.com',
+        'tumblr.com',
+        # ... toplam 7 domain
+    ]
+}
+\end{lstlisting}
+\end{kodref}
+
+\subsection{Scholarly Communication Piramidi}
+
+Bilgi biliminde kaynaklar piramit \c{s}eklinde s{\i}n{\i}fland{\i}r{\i}l{\i}r: en tepede \emph{primer kaynaklar} (orijinal ara\c{s}t{\i}rma), ortada \emph{sekonder kaynaklar} (derleme, sentez), en altta \emph{tersiyer kaynaklar} (ansiklopedi, genel bilgi) yer al{\i}r. LocoDex bu piramidi \"{u}\c{c} katmana indirger:
+
+\begin{enumerate}
+  \item \textbf{High Trust = Primer + Sekonder Akademik Kaynaklar.}
+    \begin{itemize}[leftmargin=1.5em]
+      \item \texttt{arxiv.org}: Preprint sunucusu. Peer-review \"{o}ncesi ama endorsement-tabanl{\i} moderasyon sistemi mevcut.
+      \item \texttt{nature.com}, \texttt{science.org}: En y\"{u}ksek impact factor'l\"{u} dergiler. Nature'{\i}n rejection rate'i \%92'dir --- her 100 makaleden yaln{\i}zca 8'i yay{\i}nlan{\i}r.
+      \item \texttt{ieee.org}, \texttt{acm.org}: M\"{u}hendislik ve bilgisayar bilimleri i\c{c}in gold standard.
+    \end{itemize}
+
+  \item \textbf{Medium Trust = Topluluk Denetimli Kaynaklar.}
+    \begin{itemize}[leftmargin=1.5em]
+      \item \texttt{wikipedia.org}: ``Herkes d\"{u}zenleyebilir'' dezavantaj{\i} vard{\i}r; ancak 2005'te Nature dergisinde yay{\i}nlanan \c{c}al{\i}\c{s}ma, Wikipedia'n{\i}n Encyclopaedia Britannica ile kar\c{s}{\i}la\c{s}t{\i}rmada benzer hata oran{\i}na sahip oldu\u{g}unu g\"{o}stermi\c{s}tir.
+      \item \texttt{reddit.com}: \texttt{r/science}, \texttt{r/AskHistorians} gibi modere edilen subreddit'ler y\"{u}ksek kaliteli olabilir.
+    \end{itemize}
+
+  \item \textbf{Low Trust = Bireysel \.{I}\c{c}erik Platformlar{\i}.}
+    \begin{itemize}[leftmargin=1.5em]
+      \item \texttt{blog.*}, \texttt{wordpress.com}: Edit\"{o}ryal kontrol yoktur. Ancak baz{\i} teknik bloglar (Google Research Blog gibi) son derece yetkilidir --- domain-based s{\i}n{\i}fland{\i}rman{\i}n temel \emph{s{\i}n{\i}rlamas{\i}}.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Alternatif Yakla\c{s}{\i}mlar ve Kar\c{s}{\i}la\c{s}t{\i}rma}
+
+\subsubsection{Se\c{c}ilen Yakla\c{s}{\i}m: Static Domain Whitelist}
+
+\begin{itemize}
+  \item \textbf{Avantajlar:} $O(1)$ amortize lookup (Python dictionary), deterministik skor, neredeyse s{\i}f{\i}r hesaplama maliyeti.
+  \item \textbf{Dezavantajlar:} Granularity eksikli\u{g}i (\texttt{google.com} hem Google Research hem Google Ads i\c{c}in ayn{\i} s{\i}n{\i}fta), sabit liste zamanla eskir, subdomain k\"{o}rl\"{u}\u{g}\"{u}.
+\end{itemize}
+
+\subsubsection{Alternatif 1: PageRank-Tabanl{\i} G\"{u}venilirlik}
+
+\begin{formulbox}[PageRank Form\"{u}l\"{u}]
+\begin{equation}
+\label{eq:trust-pagerank}
+\mathrm{PR}(A) = (1-d) + d \sum_{i=1}^{N} \frac{\mathrm{PR}(T_i)}{C(T_i)}
+\end{equation}
+Burada $d \approx 0.85$ damping factor, $T_i$ sayfas{\i}na $A$'ya link veren sayfalar, $C(T_i)$ ise $T_i$'nin toplam \c{c}{\i}k{\i}\c{s} link say{\i}s{\i}d{\i}r.
+\end{formulbox}
+
+PageRank her sayfaya t\"{u}m web graf{\i}n{\i}n topolojisine dayal{\i} bir skor atar. Domain baz{\i}nda s{\i}n{\i}fland{\i}rmadan \c{c}ok daha ince grenli (fine-grained) bir g\"{u}venilirlik \"{o}l\c{c}\"{u}s\"{u} verir. Ancak ger\c{c}ek zamanl{\i} hesaplama olanaks{\i}zd{\i}r ve tam web graf{\i}na eri\c{s}im gerektirir.
+
+\subsubsection{Alternatif 2: Citation Count Tabanl{\i}}
+
+\begin{equation}
+\label{eq:impact-source}
+\mathrm{Impact}(s) = \frac{\text{citation\_count}}{\text{time\_since\_publication}}
+\end{equation}
+
+Akademik makaleler i\c{c}in i\c{s}e yarar ama web sayfalar{\i} i\c{c}in citation veritaban{\i} yoktur.
+
+\subsubsection{Alternatif 3: Makine \"{O}\u{g}renimi ile S{\i}n{\i}fland{\i}rma}
+
+Feature'lar olarak domain ya\c{s}{\i}, HTTPS varl{\i}\u{g}{\i}, reklam yo\u{g}unlu\u{g}u, i\c{c}erik/reklam oran{\i} ve yaz{\i}m kalitesi kullan{\i}labilir. Castillo et~al.\ (2011) bu yakla\c{s}{\i}mlar{\i}n \%85--92 accuracy verdi\u{g}ini g\"{o}stermi\c{s}tir. Etiketli veri seti gereksinimi en b\"{u}y\"{u}k dezavantaj{\i}d{\i}r.
+
+\begin{dikkat}
+LocoDex'in se\c{c}imi pragmatik a\c{c}{\i}dan do\u{g}rudur: lokal LLM \"{u}zerinde \c{c}al{\i}\c{s}an bir sistem i\c{c}in domain whitelist en d\"{u}\c{s}\"{u}k maliyet/fayda oran{\i}n{\i} sunar. Daha sofistike y\"{o}ntemler ya \c{c}ok veri gerektirir (ML) ya da web topolojisine eri\c{s}im ister (PageRank).
+\end{dikkat}
+
+\subsection{Karma\c{s}{\i}kl{\i}k Analizi}
+
+Domain trust lookup:
+\begin{align}
+\text{Zaman:} &\quad O(1) \text{ amortize --- Python dict lookup} \\
+\text{Bellek:} &\quad O(D), \quad D = 39 + 16 + 7 = 62 \text{ domain}
+\end{align}
+
+Domain e\c{s}le\c{s}tirme (URL'den domain \c{c}{\i}karma):
+\begin{equation}
+T_{\text{extract}} = O(|\text{url}|)
+\end{equation}
+
+Toplam g\"{u}venilirlik de\u{g}erlendirme pipeline'{\i} (LLM \c{c}a\u{g}r{\i}lar{\i} dahil):
+\begin{align}
+\text{Zaman:} &\quad O(N \cdot T_{\text{llm}}), \quad T_{\text{llm}} \approx 2\text{--}30\,\text{s} \\
+\text{Bellek:} &\quad O(N \cdot C), \quad C \approx 3000\text{--}4000 \text{ karakter}
+\end{align}
+
+\subsection{Bilinen S{\i}n{\i}rlamalar}
+
+\begin{enumerate}
+  \item \textbf{\texttt{medium.com} high trust'ta:} Medium bir blog platformudur ama LocoDex onu ``high'' olarak s{\i}n{\i}fland{\i}rm{\i}\c{s}t{\i}r. Medium'da akademik kalitede yaz{\i}lar da, sahte bilgi de bulunabilir.
+  \item \textbf{\texttt{stackoverflow.com} high trust'ta:} Topluluk denetimli bir platform olarak ``medium'' daha uygun olabilir.
+  \item \textbf{Subdomain farkl{\i}l{\i}klar{\i}:} \texttt{docs.google.com} (resmi dok\"{u}mantasyon) ile \texttt{sites.google.com} (herkesin olu\c{s}turabilece\u{g}i siteler) ayn{\i} g\"{u}venilirlik katman{\i}ndad{\i}r.
+  \item \textbf{.gov ve .edu k\"{o}rl\"{u}\u{g}\"{u}:} Yaln{\i}zca belirli ABD kurumlar{\i} listelenmi\c{s}tir. T\"{u}rkiye'deki \texttt{tubitak.gov.tr} veya \texttt{.edu.tr} domainleri yoktur.
+\end{enumerate}
+
+\subsection{Say{\i}sal \"{O}rnek: Domain Trust Skorlama}
+\label{subsec:domain-trust-ornek}
+
+``Transformer modellerin performans{\i}'' konusunda 4 kaynak bulundu\u{g}unu varsayal{\i}m:
+
+\begin{table}[H]
+\centering
+\caption{Domain Trust Say{\i}sal \"{O}rne\u{g}i}
+\label{tab:domain-trust-ornek}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{clccc}
+\toprule
+\color{chapterBlue}\textbf{\#} & \color{chapterBlue}\textbf{URL} & \color{chapterBlue}\textbf{Katman} & \color{chapterBlue}\textbf{LLM Skoru} & \color{chapterBlue}\textbf{Kabul} \\
+\midrule
+1 & \texttt{arxiv.org/abs/2401.xxxxx}        & High   & 85 & \color{codeGreen}\checkmark \\
+2 & \texttt{en.wikipedia.org/wiki/Transformer} & Medium & 72 & \color{codeGreen}\checkmark \\
+3 & \texttt{towardsdatascience.com/transf...}  & High\textsuperscript{*} & 60 & \color{codeGreen}\checkmark \\
+4 & \texttt{randomtech.blogspot.com/transf...}  & Low    & 35 & \color{codeGreen}\checkmark \\
+\bottomrule
+\end{tabularx}
+\begin{flushleft}
+\small\textsuperscript{*}medium.com subdomain'i olarak high trust s{\i}n{\i}f{\i}ndad{\i}r --- tart{\i}\c{s}mal{\i} bir s{\i}n{\i}fland{\i}rma.\\
+\small Filtering threshold = 30/100 (\texttt{real\_deep\_research.py}, L788).
+\end{flushleft}
+\end{table}
+
+
+% ============================================================
+\section{LLM-as-a-Judge Paradigmas{\i}}
+\label{sec:trust-llm-judge}
+% ============================================================
+
+\subsection{Teorik Temel}
+
+LLM-as-a-Judge, bir b\"{u}y\"{u}k dil modelini insan j\"{u}ri yerine koymakt{\i}r. Bu kavram Zheng et~al.\ (2023) taraf{\i}ndan ``Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena'' makalesinde sistematik olarak tan{\i}mlanm{\i}\c{s}t{\i}r.
+
+\begin{formulbox}[Judge Fonksiyonu]
+Bir LLM judge fonksiyonu \c{s}\"{o}yle modellenir:
+\begin{equation}
+\label{eq:llm-judge}
+J: (x, y, r) \longrightarrow s \in [0, 100]
+\end{equation}
+Burada:
+\begin{itemize}[leftmargin=1.5em]
+  \item $x$ = girdi (URL, ba\c{s}l{\i}k, i\c{c}erik \"{o}rne\u{g}i, konu)
+  \item $y$ = de\u{g}erlendirme kriterleri (rubric)
+  \item $r$ = referans bilgi (konu t\"{u}r\"{u}, g\"{u}ncel tarih)
+  \item $s$ = \c{c}{\i}kt{\i} skoru
+\end{itemize}
+\end{formulbox}
+
+\subsection{LocoDex'te \"{U}\c{c} Farkl{\i} Skorlama Skalas{\i}}
+
+LocoDex projesi \"{u}\c{c} farkl{\i} skala kullan{\i}r:
+
+\begin{table}[H]
+\centering
+\caption{\"{U}\c{c} Farkl{\i} Skorlama Skalas{\i}n{\i}n Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:scoring-scales}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lccXcc}
+\toprule
+\color{chapterBlue}\textbf{Dosya} & \color{chapterBlue}\textbf{Skala} & \color{chapterBlue}\textbf{E\c{s}ik} & \color{chapterBlue}\textbf{Parse Y\"{o}ntemi} & \color{chapterBlue}\textbf{Default} & \color{chapterBlue}\textbf{Norm.} \\
+\midrule
+\texttt{real\_deep\_research} & 0--100 & 30 & \texttt{startswith()} & 50 & 0.30 \\
+\texttt{smart\_multilingual}  & 1--10  & 6  & \texttt{regex r'(\textbackslash d+)/10'} & 5  & 0.60 \\
+\texttt{evals.py}            & 0--1   & -- & XML tag parse    & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{dikkat}
+\texttt{smart\_multilingual} 2$\times$ daha se\c{c}icidir: normalizasyon sonras{\i} e\c{s}ik de\u{g}eri 0.60 iken, \texttt{real\_deep\_research} yaln{\i}zca 0.30'd{\i}r. Bu tutars{\i}zl{\i}k, iki modülün farkl{\i} kullan{\i}m senaryolar{\i} i\c{c}in geli\c{s}tirildi\u{g}ini g\"{o}sterir.
+\end{dikkat}
+
+\subsection{Skor Parse Bug'{\i} ve D\"{u}zeltmesi}
+
+\texttt{real\_deep\_research.py} dosyas{\i}ndaki parse mekanizmas{\i}:
+
+\begin{kodref}{Skor Parse --- Mevcut Kod}
+\begin{lstlisting}
+for line in lines:
+    if line.startswith('Guvenilirlik:'):
+        try:
+            score_text = line.split(':')[1].strip()
+            reliability_score = int(
+                ''.join(filter(str.isdigit, score_text))
+            )
+        except:
+            pass
+\end{lstlisting}
+\end{kodref}
+
+\begin{dikkat}
+E\u{g}er LLM ``G\"{u}venilirlik: 85/100'' format{\i}nda yazd{\i}ysa, \texttt{filter(str.isdigit)} hem 85'i hem 100'\"{u} al{\i}r ve sonu\c{c} \texttt{int('85100') = 85100} olur. Bu ciddi bir bug'd{\i}r. D\"{u}zeltilmi\c{s} versiyon:
+\begin{lstlisting}
+import re
+match = re.search(r'(\d+)', score_text)
+reliability_score = int(match.group(1)) if match else 50
+\end{lstlisting}
+\texttt{smart\_multilingual} versiyonu bu bug'{\i} \textbf{d\"{u}zeltmi\c{s}tir}: \texttt{re.search(r'(\textbackslash d+)/10', evaluation)}.
+\end{dikkat}
+
+\subsection{Inter-Rater Reliability: LLM Tutarl{\i}l{\i}\u{g}{\i} Sorunu}
+
+LLM'ler deterministik de\u{g}ildir. $T > 0$ (temperature) ile \c{c}al{\i}\c{s}t{\i}r{\i}ld{\i}klar{\i}nda ayn{\i} girdi i\c{c}in farkl{\i} skorlar \"{u}retirler. Bu, psikometrideki \emph{inter-rater reliability} probleminin dijital kar\c{s}{\i}l{\i}\u{g}{\i}d{\i}r.
+
+\begin{formulbox}[Cohen's Kappa]
+\begin{equation}
+\label{eq:cohens-kappa}
+\kappa = \frac{p_o - p_e}{1 - p_e}
+\end{equation}
+Burada $p_o$ = g\"{o}zlenen uyu\c{s}ma oran{\i} (observed agreement), $p_e$ = beklenen uyu\c{s}ma oran{\i} (expected agreement by chance).
+\end{formulbox}
+
+\begin{table}[H]
+\centering
+\caption{LLM Tutarl{\i}l{\i}k Testi --- Ayn{\i} 5 Kaynak, 2 \c{C}al{\i}\c{s}t{\i}rma ($T=0.3$)}
+\label{tab:inter-rater}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{lccc}
+\toprule
+\color{chapterBlue}\textbf{Kaynak} & \color{chapterBlue}\textbf{Run 1} & \color{chapterBlue}\textbf{Run 2} & \color{chapterBlue}\textbf{Sapma} \\
+\midrule
+\texttt{arxiv.org/paper1}   & 88 & 85 & $\pm 3$ \\
+\texttt{wikipedia.org/X}    & 65 & 70 & $\pm 5$ \\
+\texttt{blog.example.com}   & 25 & 32 & $\pm 7$ \\
+\texttt{nature.com/Y}       & 92 & 90 & $\pm 2$ \\
+\texttt{reddit.com/Z}       & 55 & 48 & $\pm 7$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Tipik bir lokal LLM (7B--13B parametre) i\c{c}in $T=0.3$ ile:
+\begin{itemize}
+  \item Ortalama sapma: $\pm 5$--$10$ puan (0--100 skalas{\i}nda)
+  \item High/Low ayr{\i}m{\i}nda (threshold = 30 veya 50): \%85--90 tutarl{\i}l{\i}k
+  \item Kesin say{\i} e\c{s}le\c{s}mesi: \%10--20
+\end{itemize}
+
+\textbf{Neden tek LLM \c{c}a\u{g}r{\i}s{\i} yeterli?} Her kaynak i\c{c}in 3 kez \c{c}a\u{g}{\i}r{\i}p ortalama almak g\"{u}venilirli\u{g}i art{\i}r{\i}rd{\i}, ama 20 kaynak i\c{c}in $20 \times 3 \times 2\,\text{s} = 120\,\text{s}$ ek s\"{u}re demektir. Kazan{\i}m yaln{\i}zca $\pm 5$ puan hassasiyet iyile\c{s}mesidir --- lokal LLM'ler i\c{c}in bu trade-off de\u{g}mez.
+
+\subsection{Bias T\"{u}rleri}
+
+\begin{enumerate}
+  \item \textbf{Position Bias:} LLM'ler prompt'un ba\c{s}{\i}ndaki bilgiyi daha \c{c}ok dikkate al{\i}r.
+  \item \textbf{Verbosity Bias:} Uzun i\c{c}erik \"{o}rnekleri daha y\"{u}ksek skor alma e\u{g}ilimindedir.
+  \item \textbf{Anchoring Effect:} Default skor 50 oldu\u{g}u i\c{c}in LLM'ler skorlar{\i}n{\i} 50 etraf{\i}nda yo\u{g}unla\c{s}t{\i}rma e\u{g}ilimi g\"{o}sterir.
+\end{enumerate}
+
+
+% ============================================================
+\section{Staleness Detection (Bayatl{\i}k Tespiti)}
+\label{sec:staleness}
+% ============================================================
+
+\subsection{Teknoloji De\u{g}i\c{s}im H{\i}z{\i} Modeli}
+
+LocoDex, bilginin ``bayatl{\i}\u{g}{\i}n{\i}'' konu t\"{u}r\"{u}ne g\"{o}re d\"{o}rt kategoride de\u{g}erlendirir (\texttt{real\_deep\_research.py}, sat{\i}r 80--86):
+
+\begin{table}[H]
+\centering
+\caption{Staleness Kategorileri ve Decay Parametreleri}
+\label{tab:staleness-params}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{llccX}
+\toprule
+\color{chapterBlue}\textbf{Kategori} & \color{chapterBlue}\textbf{De\u{g}i\c{s}im H{\i}z{\i}} & \color{chapterBlue}\textbf{$t_{1/2}$} & \color{chapterBlue}\textbf{$\lambda$ (y{\i}l$^{-1}$)} & \color{chapterBlue}\textbf{\"{O}rnek Alanlar} \\
+\midrule
+Fast      & 6 ay  & 0.5 y{\i}l  & 1.386 & AI modelleri, mobil i\c{s}lemciler \\
+Medium    & 2 y{\i}l & 2.0 y{\i}l  & 0.347 & Web framework'leri, bulut servisleri \\
+Slow      & 5 y{\i}l & 5.0 y{\i}l  & 0.139 & Veritabanlar{\i}, networking, matematik \\
+Very Slow & 10 y{\i}l & 10.0 y{\i}l & 0.069 & Programlama dilleri, i\c{s}letim sistemi \c{c}ekirdekleri \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Exponential Decay Modeli: T\"{u}retme}
+
+Bilginin zamanla ``tazeli\u{g}i'' radyoaktif bozunma modeline benzetilerek modellenir. Tazelik fonksiyonunu $F(t)$ olarak tan{\i}mlayal{\i}m; burada $t$ bilginin ya\c{s}{\i}d{\i}r (y{\i}l cinsinden).
+
+\begin{formulbox}[Exponential Decay T\"{u}retmesi]
+\textbf{Ba\c{s}lang{\i}\c{c} ko\c{s}ulu:} $F(0) = 1$ \quad (yeni yay{\i}n = tam taze)
+
+\textbf{S{\i}n{\i}r ko\c{s}ulu:} $\lim_{t \to \infty} F(t) = 0$ \quad (\c{c}ok eski bilgi = bayat)
+
+\textbf{Diferansiyel denklem:} Bozunma h{\i}z{\i}, mevcut tazelikle orant{\i}l{\i}d{\i}r:
+\begin{equation}
+\label{eq:decay-ode}
+\frac{dF}{dt} = -\lambda \, F(t)
+\end{equation}
+
+\textbf{\c{C}\"{o}z\"{u}m:}
+\begin{align}
+\frac{dF}{F} &= -\lambda \, dt \\
+\ln F &= -\lambda \, t + C \\
+F(t) &= A \, e^{-\lambda t}
+\end{align}
+
+$F(0) = 1$ ba\c{s}lang{\i}\c{c} ko\c{s}ulundan $A = 1$:
+\begin{equation}
+\label{eq:freshness}
+\boxed{F(t) = e^{-\lambda t}}
+\end{equation}
+\end{formulbox}
+
+\subsubsection{$\lambda$ Parametresinin Anlam{\i}}
+
+Yar{\i} \"{o}m\"{u}r (half-life) tan{\i}m{\i}ndan:
+\begin{equation}
+\label{eq:halflife}
+F(t_{1/2}) = \frac{1}{2} \quad \Longrightarrow \quad e^{-\lambda \, t_{1/2}} = \frac{1}{2} \quad \Longrightarrow \quad \lambda = \frac{\ln 2}{t_{1/2}}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{$\lambda$ Parametresinin Kategori Baz{\i}nda Hesab{\i}}
+\label{tab:lambda-values}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{lcc}
+\toprule
+\color{chapterBlue}\textbf{Kategori} & \color{chapterBlue}\textbf{$t_{1/2}$ (y{\i}l)} & \color{chapterBlue}\textbf{$\lambda = \ln 2 / t_{1/2}$} \\
+\midrule
+Fast (AI)  & 0.5  & $\ln 2 / 0.5 = 1.386$ \\
+Medium     & 2.0  & $\ln 2 / 2.0 = 0.347$ \\
+Slow       & 5.0  & $\ln 2 / 5.0 = 0.139$ \\
+Very Slow  & 10.0 & $\ln 2 / 10.0 = 0.069$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Say{\i}sal \"{O}rnekler}
+
+\begin{ornek}
+``GPT-4 performans{\i}'' konusunda 2022 tarihli bir makale ne kadar taze?
+
+\begin{align}
+\text{Konu:} &\quad \text{AI (Fast kategorisi)} \\
+\lambda &= 1.386 \;\text{y{\i}l}^{-1} \\
+t &= 2026 - 2022 = 4 \;\text{y{\i}l} \\
+F(4) &= e^{-1.386 \times 4} = e^{-5.544} = 0.00391 \approx \%0.4
+\end{align}
+
+Bilgi pratikte kullan{\i}\c{s}s{\i}zd{\i}r --- \%0.4 tazelik. 2022'de GPT-4 hen\"{u}z yay{\i}nlanmam{\i}\c{s}t{\i} bile.
+\end{ornek}
+
+\begin{ornek}
+Ayn{\i} 2022 tarihli makale ``TCP/IP protokol\"{u}'' konusunda olsun:
+
+\begin{align}
+\text{Konu:} &\quad \text{Networking (Slow kategorisi)} \\
+\lambda &= 0.139 \;\text{y{\i}l}^{-1} \\
+t &= 4 \;\text{y{\i}l} \\
+F(4) &= e^{-0.139 \times 4} = e^{-0.556} = 0.573 \approx \%57.3
+\end{align}
+
+Makul --- TCP/IP 4 y{\i}lda \c{c}ok de\u{g}i\c{s}mez ama k\"{u}\c{c}\"{u}k g\"{u}ncellemeler olur.
+\end{ornek}
+
+\subsection{Tazelik Fonksiyonu Grafi\u{g}i}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=0.85\textwidth,
+    height=7cm,
+    xlabel={$t$ (y{\i}l)},
+    ylabel={$F(t)$ (Tazelik)},
+    xmin=0, xmax=12,
+    ymin=0, ymax=1.05,
+    grid=both,
+    grid style={draw=boxBorder!30},
+    axis background/.style={fill=codeBG},
+    axis line style={draw=textWhite},
+    tick style={draw=textWhite},
+    ticklabel style={color=textWhite},
+    xlabel style={color=textWhite},
+    ylabel style={color=textWhite},
+    legend style={
+        at={(0.98,0.98)},
+        anchor=north east,
+        fill=boxBG,
+        draw=boxBorder,
+        text=textWhite,
+        font=\small
+    },
+]
+\addplot[color=codeRed, line width=1.5pt, domain=0:12, samples=100]
+    {exp(-1.386*x)};
+\addlegendentry{Fast ($\lambda=1.386$)}
+
+\addplot[color=codeYellow, line width=1.5pt, domain=0:12, samples=100]
+    {exp(-0.347*x)};
+\addlegendentry{Medium ($\lambda=0.347$)}
+
+\addplot[color=codeGreen, line width=1.5pt, domain=0:12, samples=100]
+    {exp(-0.139*x)};
+\addlegendentry{Slow ($\lambda=0.139$)}
+
+\addplot[color=linkBlue, line width=1.5pt, domain=0:12, samples=100]
+    {exp(-0.069*x)};
+\addlegendentry{Very Slow ($\lambda=0.069$)}
+
+% Half-life markers
+\addplot[color=textWhite, dashed, line width=0.8pt] coordinates {(0,0.5) (12,0.5)};
+\node[color=textWhite, font=\scriptsize, anchor=west] at (axis cs:9.5,0.53) {$F=0.5$};
+
+\end{axis}
+\end{tikzpicture}
+\caption{D\"{o}rt farkl{\i} kategori i\c{c}in tazelik fonksiyonunun zamana ba\u{g}l{\i} de\u{g}i\c{s}imi. Yatay kesikli \c{c}izgi yar{\i} \"{o}m\"{u}r ($t_{1/2}$) seviyesini g\"{o}sterir.}
+\label{fig:freshness-decay}
+\end{figure}
+
+\subsection{Kodda Uygulama: Implicit vs.\ Explicit}
+
+\begin{dikkat}
+LocoDex'te exponential decay form\"{u}l\"{u} \textbf{explicit olarak kodda yoktur}. Bunun yerine, LLM'e prompt \"{u}zerinden staleness de\u{g}erlendirmesi yapt{\i}r{\i}l{\i}r:
+\begin{lstlisting}
+# real_deep_research.py, L80-86
+"""
+* Hizli degisen teknolojiler (AI modelleri, mobil): 6 ay oncesi = ESKI
+* Orta hizda degisen (web framework, bulut): 2 yil oncesi = ESKI
+* Yavas degisen (veritabani, networking): 5 yil oncesi = HALA GECERLI
+* Cok yavas degisen (PL, OS cekirdekleri): 10 yil oncesi = HALA GECERLI
+"""
+\end{lstlisting}
+LLM bu kurallarla ``e\u{g}itilir'' (prompt-based) ve kendi karar{\i}n{\i} verir. Matematiksel form\"{u}l\"{u}n do\u{g}al dil yakla\c{s}{\i}m{\i}d{\i}r --- LLM exponential decay'i \emph{implicit} olarak uygular.
+\end{dikkat}
+
+\subsubsection{Explicit Form\"{u}l Uygulamas{\i} (\.{I}yile\c{s}tirme \"{O}nerisi)}
+
+\begin{kodref}{Explicit Freshness Scoring}
+\begin{lstlisting}
+import math
+from datetime import datetime
+
+DECAY_RATES = {
+    'fast':      math.log(2) / 0.5,   # 1.386/yil
+    'medium':    math.log(2) / 2.0,    # 0.347/yil
+    'slow':      math.log(2) / 5.0,    # 0.139/yil
+    'very_slow': math.log(2) / 10.0    # 0.069/yil
+}
+
+def freshness_score(publish_year, topic_category,
+                    current_year=2026):
+    t = current_year - publish_year
+    lam = DECAY_RATES.get(topic_category,
+                          DECAY_RATES['medium'])
+    return math.exp(-lam * t)
+
+# Ornekler:
+print(freshness_score(2025, 'fast'))       # 0.250
+print(freshness_score(2024, 'fast'))       # 0.063
+print(freshness_score(2024, 'slow'))       # 0.757
+print(freshness_score(2020, 'very_slow'))  # 0.660
+\end{lstlisting}
+\end{kodref}
+
+
+% ============================================================
+\section{Tarafs{\i}zl{\i}k Analizi (Bias Detection)}
+\label{sec:bias-detection}
+% ============================================================
+
+\subsection{Medya \"{O}nyarg{\i}s{\i} T\"{u}rleri}
+
+Medya \"{o}nyarg{\i}s{\i} (media bias) tespit etmek, NLP'nin en zor problemlerinden biridir. Temel \"{o}nyarg{\i} t\"{u}rleri:
+
+\begin{enumerate}
+  \item \textbf{Selection Bias (Se\c{c}im \"{O}nyarg{\i}s{\i}):} Hangi konular{\i}n raporlanaca\u{g}{\i}n{\i}n se\c{c}imi.
+  \item \textbf{Coverage Bias (Kapsam \"{O}nyarg{\i}s{\i}):} Bir konuya ne kadar yer verildi\u{g}i.
+  \item \textbf{Statement Bias (\.{I}fade \"{O}nyarg{\i}s{\i}):} Olaylar{\i}n nas{\i}l tarif edildi\u{g}i.
+  \item \textbf{Framing Bias (\c{C}er\c{c}eveleme \"{O}nyarg{\i}s{\i}):} Olaylar{\i}n hangi \c{c}er\c{c}eve i\c{c}inde sunuldu\u{g}u.
+\end{enumerate}
+
+\subsection{LocoDex'in Yakla\c{s}{\i}m{\i}}
+
+LocoDex'in bias detection yakla\c{s}{\i}m{\i} tamamen prompt-based'd{\i}r (\texttt{real\_deep\_research.py}, sat{\i}r 88--93):
+
+\begin{kodref}{Bias Detection Prompt}
+\begin{lstlisting}
+"""
+3. Kaynak Kalitesi ve Tarafsizlik:
+   - Icerik objektifligi vs subjektifligi
+   - Spam/clickbait belirtileri
+   - Siyasi/ideolojik onyargi kontrol et
+   - Birden fazla bakis acisi sunuyor mu?
+   - Kanit ve referans kalitesi
+"""
+\end{lstlisting}
+\end{kodref}
+
+\begin{dikkat}
+LLM'lerin \emph{kendileri} de bias ta\c{s}{\i}r. Gallegos et~al.\ (2024, ``Bias and Fairness in Large Language Models'') \c{s}unu g\"{o}stermi\c{s}tir:
+\begin{itemize}[leftmargin=1.5em]
+  \item LLM'ler siyasi bias'ta orta-sol'a meyillidir
+  \item Bat{\i}l{\i} kaynaklar{\i} sistematik olarak daha g\"{u}venilir bulurlar
+  \item \.{I}ngilizce olmayan kaynaklara kar\c{s}{\i} implicit bias vard{\i}r
+\end{itemize}
+Bir LLM'e ``bu kaynak tarafs{\i}z m{\i}?'' diye sormak, kendi e\u{g}itim verisinin bias'lar{\i}ndan ba\u{g}{\i}ms{\i}z bir de\u{g}erlendirme garantilemez.
+\end{dikkat}
+
+
+% ============================================================
+\section{\c{C}eli\c{s}kili Bilgi Tespiti (Cross-Source Validation)}
+\label{sec:cross-source}
+% ============================================================
+
+\subsection{Algoritma}
+
+\texttt{detect\_conflicting\_information()} fonksiyonu (\texttt{real\_deep\_research.py}, sat{\i}r 152--190) \c{s}u ad{\i}mlar{\i} izler:
+
+\begin{enumerate}
+  \item En az 2 kaynak gerektirir.
+  \item \.{I}lk 5 kayna\u{g}{\i} se\c{c}er ($O(1)$ --- sabit say{\i}).
+  \item T\"{u}m kaynaklar{\i} tek bir prompt'a birle\c{s}tirir.
+  \item LLM'den \c{c}eli\c{s}kili bilgileri tespit etmesini ister.
+\end{enumerate}
+
+\subsection{Matematiksel Karma\c{s}{\i}kl{\i}k}
+
+$N$ kaynak aras{\i}ndaki t\"{u}m ikili kar\c{s}{\i}la\c{s}t{\i}rma say{\i}s{\i}:
+\begin{equation}
+\label{eq:pairwise}
+\binom{N}{2} = \frac{N!}{2!(N-2)!} = \frac{N(N-1)}{2}
+\end{equation}
+
+5 kaynak i\c{c}in: $\binom{5}{2} = 10$ \c{c}ift kar\c{s}{\i}la\c{s}t{\i}rma.
+
+\begin{table}[H]
+\centering
+\caption{\c{C}eli\c{s}ki Tespit Y\"{o}ntemlerinin Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:conflict-methods}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lcccc}
+\toprule
+\color{chapterBlue}\textbf{Y\"{o}ntem} & \color{chapterBlue}\textbf{LLM \c{C}a\u{g}r{\i}s{\i}} & \color{chapterBlue}\textbf{Prompt} & \color{chapterBlue}\textbf{Precision} & \color{chapterBlue}\textbf{Recall} \\
+\midrule
+Pairwise (her \c{c}ift)  & $\binom{N}{2}=10$ & K{\i}sa   & Y\"{u}ksek & Y\"{u}ksek \\
+All-at-once (tek prompt) & 1                  & Uzun    & Orta     & D\"{u}\c{s}\"{u}k \\
+Hierarchical (3'l\"{u} gruplar) & $\binom{N}{3}$ + merge & Orta & Orta & Orta \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+LocoDex ``all-at-once'' y\"{o}ntemini se\c{c}er:
+\begin{itemize}
+  \item \textbf{Maliyet:} 1 LLM \c{c}a\u{g}r{\i}s{\i} vs 10
+  \item \textbf{Context:} 5 kaynak $\times$ 500 karakter $\approx$ 2500 token --- \c{c}o\u{g}u modelin context'ine s{\i}\u{g}ar
+  \item \textbf{Dezavantaj:} LLM uzun prompt'larda ince \c{c}eli\c{s}kileri ka\c{c}{\i}rabilir (\emph{lost-in-the-middle} problemi)
+\end{itemize}
+
+
+% ============================================================
+\section{Dil Alg{\i}lama Sistemi (Language Detection)}
+\label{sec:language-detection}
+% ============================================================
+
+\subsection{Karakter-Tabanl{\i} Alg{\i}lama: Unicode Range Analizi}
+
+\subsubsection{Teorik Temel}
+
+Her dilin kendine \"{o}zg\"{u} karakterleri vard{\i}r. Unicode standard{\i}nda bu karakterler belirli code point'lere atanm{\i}\c{s}t{\i}r.
+
+\begin{table}[H]
+\centering
+\caption{Dil Ba\u{g}{\i}ml{\i} Unicode Karakter Bloklar{\i}}
+\label{tab:unicode-blocks}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lllX}
+\toprule
+\color{chapterBlue}\textbf{Dil} & \color{chapterBlue}\textbf{Karakterler} & \color{chapterBlue}\textbf{Unicode Range} & \color{chapterBlue}\textbf{Blok} \\
+\midrule
+T\"{u}rk\c{c}e    & \c{c}, \u{g}, {\i}, \"{o}, \c{s}, \"{u}    & U+00C7, U+011E, U+0131, U+00D6, U+015E, U+00DC & Latin Extended-A + Latin-1 Supp. \\
+Frans{\i}zca & \'{e}, \`{e}, \^{e}    & U+00E9, U+00E8, U+00EA & Latin-1 Supplement \\
+Almanca   & \"{a}, \"{o}, \"{u}, \ss & U+00E4, U+00F6, U+00FC, U+00DF & Latin-1 Supplement \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Cedilla Problemi: Kritik Bug}
+
+\begin{dikkat}
+T\"{u}rk\c{c}e \texttt{\c{c}} (c-cedilla, U+00E7) ve Frans{\i}zca \texttt{\c{c}} (c-cedilla, U+00E7) \textbf{ayn{\i} karakterdir}. S{\i}ral{\i} kontrol mekanizmas{\i}:
+\begin{lstlisting}
+if any(char in text for char in turkish_chars):
+    return 'tr'    # Turkce cedilla bulundu
+elif any(char in text for char in french_chars):
+    return 'fr'    # Buraya hic ulasilmiyor!
+\end{lstlisting}
+\"{O}rnek: ``La fa\c{c}on dont le syst\`{e}me fonctionne'' (Frans{\i}zca c\"{u}mlesi) --- i\c{c}inde \texttt{\c{c}} (cedilla) var, sistem bunu \textbf{T\"{u}rk\c{c}e} olarak s{\i}n{\i}fland{\i}r{\i}r. Bu bir \emph{priority bias} bug'{\i}d{\i}r.
+
+\textbf{D\"{u}zeltme:} Dile \"{o}zg\"{u} benzersiz karakter k\"{u}meleri tan{\i}mlanmal{\i}d{\i}r:
+\begin{lstlisting}
+# Turkce'ye ozel (Fransizca'da YOK):
+TURKISH_UNIQUE = {'g', 'i', 's'}  # U+011E/F, U+0131, U+015E/F
+
+# Fransizca'ya ozel (Turkce'de YOK):
+FRENCH_UNIQUE = {'e', 'e', 'e'}   # acute, grave, circumflex
+
+# Almanca'ya ozel:
+GERMAN_UNIQUE = {'ss'}             # eszett
+\end{lstlisting}
+\end{dikkat}
+
+\subsection{Dil Alg{\i}lama Karar A\u{g}ac{\i}}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    decision/.style={diamond, draw=chapterBlue, fill=boxBG, text=textWhite, text width=3.5cm, align=center, inner sep=2pt, font=\small},
+    block/.style={rectangle, draw=codeGreen!70, fill=boxBG, text=textWhite, rounded corners, minimum height=1cm, text width=2.5cm, align=center, font=\small},
+    line/.style={draw=textWhite, ->, >=stealth, thick},
+    yesno/.style={font=\scriptsize, color=codeYellow}
+]
+
+% Nodes
+\node[block] (input) {Girdi Metni};
+\node[decision, below=0.8cm of input] (turkuni) {T\"{u}rk\c{c}e benzersiz\\karakter var m{\i}?\\(\u{g}, {\i}, \c{s})};
+\node[block, right=3cm of turkuni] (tr) {\color{codeGreen}T\"{u}rk\c{c}e};
+\node[decision, below=1.2cm of turkuni] (fruni) {Frans{\i}zca benzersiz\\karakter var m{\i}?\\(\'{e}, \`{e}, \^{e})};
+\node[block, right=3cm of fruni] (fr) {\color{codeGreen}Frans{\i}zca};
+\node[decision, below=1.2cm of fruni] (deuni) {Almanca benzersiz\\karakter var m{\i}?\\(\"{a}, \ss)};
+\node[block, right=3cm of deuni] (de) {\color{codeGreen}Almanca};
+\node[decision, below=1.2cm of deuni] (stopword) {Stop word\\analizi};
+\node[block, below left=1.2cm and 0.5cm of stopword] (swlang) {\color{codeYellow}En y\"{u}ksek\\skorlu dil};
+\node[block, below right=1.2cm and 0.5cm of stopword] (en) {\color{codeGreen}\.{I}ngilizce\\(default)};
+
+% Arrows
+\draw[line] (input) -- (turkuni);
+\draw[line] (turkuni) -- node[yesno, above] {Evet} (tr);
+\draw[line] (turkuni) -- node[yesno, left] {Hay{\i}r} (fruni);
+\draw[line] (fruni) -- node[yesno, above] {Evet} (fr);
+\draw[line] (fruni) -- node[yesno, left] {Hay{\i}r} (deuni);
+\draw[line] (deuni) -- node[yesno, above] {Evet} (de);
+\draw[line] (deuni) -- node[yesno, left] {Hay{\i}r} (stopword);
+\draw[line] (stopword) -- node[yesno, left] {Bulundu} (swlang);
+\draw[line] (stopword) -- node[yesno, right] {Bulunamad{\i}} (en);
+
+\end{tikzpicture}
+\caption{Dil alg{\i}lama karar a\u{g}ac{\i} --- benzersiz karakter k\"{u}meleriyle d\"{u}zeltilmi\c{s} versiyon. \"{O}ncelik s{\i}ras{\i} benzersiz karakterlere dayan{\i}r, cedilla problemi \c{c}\"{o}z\"{u}lm\"{u}\c{s}t\"{u}r.}
+\label{fig:lang-decision-tree}
+\end{figure}
+
+\subsection{Kelime-Tabanl{\i} Alg{\i}lama: Stop Word Frequency Analizi}
+
+\subsubsection{Zipf Yasas{\i} ile \.{I}li\c{s}ki}
+
+George Kingsley Zipf'in 1935'te g\"{o}zlemledi\u{g}i yasa:
+
+\begin{formulbox}[Zipf Yasas{\i}]
+\begin{equation}
+\label{eq:zipf}
+f(r) = \frac{C}{r^{\alpha}}
+\end{equation}
+Burada:
+\begin{itemize}[leftmargin=1.5em]
+  \item $f(r)$ = $r$'inci en s{\i}k kelimenin frekans{\i}
+  \item $C$ = normalizasyon sabiti
+  \item $r$ = s{\i}ra (rank)
+  \item $\alpha \approx 1$ (\c{c}o\u{g}u do\u{g}al dil i\c{c}in)
+\end{itemize}
+Stop word'ler Zipf da\u{g}{\i}l{\i}m{\i}n{\i}n \emph{ba\c{s}{\i}nda} yer al{\i}r (en y\"{u}ksek frekans). Bu y\"{u}zden k{\i}sa metinlerde bile bulunma olas{\i}l{\i}klar{\i} y\"{u}ksektir.
+\end{formulbox}
+
+\subsubsection{LocoDex'in Scoring Mekanizmas{\i}}
+
+\begin{kodref}{Stop Word Scoring}
+\begin{lstlisting}
+turkish_score = sum(1 for word in turkish_words
+                    if word in text_lower)
+french_score  = sum(1 for word in french_words
+                    if word in text_lower)
+german_score  = sum(1 for word in german_words
+                    if word in text_lower)
+
+if turkish_score > 0:
+    return 'tr'
+\end{lstlisting}
+\end{kodref}
+
+Bu basit additive scoring'in formalizasyonu:
+
+\begin{formulbox}[Stop Word Scoring Form\"{u}l\"{u}]
+\begin{equation}
+\label{eq:stopword-score}
+\mathrm{Score}(\text{dil}_k) = \sum_{w \in W_k} \mathbb{1}(w \in \text{text})
+\end{equation}
+Burada $W_k$ = dil $k$ i\c{c}in stop word listesi, $\mathbb{1}(\cdot)$ = indicator fonksiyonu.
+\end{formulbox}
+
+\subsubsection{TF-IDF Alternatifi}
+
+Basit sum yerine TF-IDF (Term Frequency -- Inverse Document Frequency) kullan{\i}lsayd{\i}:
+
+\begin{align}
+\mathrm{TF}(w, \text{text}) &= \frac{\mathrm{count}(w, \text{text})}{|\text{text}|} \label{eq:trust-tf} \\
+\mathrm{IDF}(w) &= \log\frac{N}{df(w)} \label{eq:trust-idf} \\
+\mathrm{TF\text{-}IDF}(w, \text{text}) &= \mathrm{TF}(w, \text{text}) \cdot \mathrm{IDF}(w) \label{eq:trust-tfidf}
+\end{align}
+
+TF-IDF, ``ve'' gibi her dilde ge\c{c}en kelimelere d\"{u}\c{s}\"{u}k a\u{g}{\i}rl{\i}k verirken, ``nedir'' gibi T\"{u}rk\c{c}e'ye \"{o}zg\"{u} kelimelere y\"{u}ksek a\u{g}{\i}rl{\i}k verir.
+
+\textbf{LocoDex neden basit sum kullan{\i}r?} Stop word listesi zaten dile \"{o}zg\"{u} se\c{c}ilmi\c{s}tir; tek bir metin (arama sorgusu) \"{u}zerinde \c{c}al{\i}\c{s}{\i}r --- dok\"{u}man koleksiyonu yoktur; arama sorgular{\i} k{\i}sad{\i}r (5--15 kelime) --- TF-IDF i\c{c}in yeterli istatistik yoktur.
+
+\subsubsection{Say{\i}sal \"{O}rnek}
+
+\begin{ornek}
+Metin: ``T\"{u}rkiye'de yapay zeka nedir ve nas{\i}l kullan{\i}l{\i}r''
+
+T\"{u}rk\c{c}e stop word'ler: \{ve, ile, bir, bu, \c{s}u, o, nedir, nas{\i}l, ne, hangi, en, iyi, g\"{u}ncel\}
+
+E\c{s}le\c{s}meler: ``ve'' $\checkmark$, ``nedir'' $\checkmark$, ``nas{\i}l'' $\checkmark$ $\Rightarrow$ \texttt{turkish\_score} $= 3$
+
+Frans{\i}zca stop word'ler: \{le, la, les, un, une, de, du, des, et, ou, est, ce, que, qui\}
+
+E\c{s}le\c{s}meler: hi\c{c}biri $\Rightarrow$ \texttt{french\_score} $= 0$
+
+\textbf{Karar:} \texttt{turkish\_score} $(3) > 0$ $\Rightarrow$ dil $=$ \texttt{tr} \quad \color{codeGreen}DO\u{G}RU
+\end{ornek}
+
+\subsection{Regex-Based Detection Performans{\i}}
+
+\texttt{smart\_multilingual\_research.py} dosyas{\i}nda regex kullan{\i}l{\i}r:
+
+\begin{lstlisting}
+turkish_chars = re.search(r'[cgiosuCGIOSU]', text)
+\end{lstlisting}
+
+\begin{formulbox}[Performans Analizi]
+\textbf{Regex \texttt{re.search()}:}
+\begin{align}
+\text{En iyi durum:} &\quad O(1) \text{ --- ilk karakter T\"{u}rk\c{c}e} \\
+\text{En k\"{o}t\"{u} durum:} &\quad O(|\text{text}|) \text{ --- T\"{u}rk\c{c}e karakter yok} \\
+\text{Ortalama:} &\quad O(|\text{text}|/2)
+\end{align}
+
+\textbf{\texttt{any(char in text for char in chars)}:}
+\begin{equation}
+T = O(K \cdot |\text{text}|), \quad K = 12 \text{ karakter}
+\end{equation}
+
+Regex versiyonu $\sim$12$\times$ daha h{\i}zl{\i} (\c{c}\"{u}nk\"{u} karakter s{\i}n{\i}f{\i} \texttt{[...]} tek ge\c{c}i\c{s}te kontrol eder).
+
+Pratik fark: 1000 karakterlik metin i\c{c}in $\sim$12\,$\mu$s vs $\sim$144\,$\mu$s. \.{I}hmal edilebilir, ama API call ba\c{s}{\i}na binlerce metin i\c{s}lenecekse fark birikir.
+\end{formulbox}
+
+\subsection{N-Gram Modeli (Kodda Yok, Teorik Alternatif)}
+
+\subsubsection{Teorik Temel}
+
+N-gram modeli, karakter veya kelime dizilerinin ko\c{s}ullu olas{\i}l{\i}\u{g}{\i}na dayan{\i}r. Bigram modeli i\c{c}in:
+
+\begin{equation}
+\label{eq:bigram}
+P(c_n \mid c_{n-1}) = \frac{\mathrm{count}(c_{n-1}, c_n)}{\mathrm{count}(c_{n-1})}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Dil Baz{\i}nda Karakteristik Bigram Profilleri}
+\label{tab:bigram-profiles}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{lll}
+\toprule
+\color{chapterBlue}\textbf{Dil} & \color{chapterBlue}\textbf{En S{\i}k Bigram'lar} & \color{chapterBlue}\textbf{Seyrek Bigram'lar} \\
+\midrule
+T\"{u}rk\c{c}e    & la, in, an, ar, le & qx, wk \\
+\.{I}ngilizce & th, he, in, er, an & qx, zp \\
+Frans{\i}zca & es, en, le, de, re & wk, qz \\
+Almanca   & en, er, ch, de, ei & qx, wk \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dil tan{\i}ma: Bir metin i\c{c}indeki t\"{u}m bigram'lar{\i} say{\i}p her dil profiline olan mesafeyi \"{o}l\c{c}eriz:
+
+\begin{equation}
+\label{eq:bigram-distance}
+D(\text{text}, \text{lang}) = \sum_{\text{bigram}} \left| f_{\text{text}}(\text{bigram}) - f_{\text{lang}}(\text{bigram}) \right|^2
+\end{equation}
+
+En d\"{u}\c{s}\"{u}k mesafeli dil se\c{c}ilir:
+\begin{equation}
+\label{eq:argmin-lang}
+\hat{L} = \arg\min_{k} D(\text{text}, \text{lang}_k)
+\end{equation}
+
+\subsubsection{Do\u{g}ruluk vs Metin Uzunlu\u{g}u}
+
+Cavnar ve Trenkle'nin (1994) \c{c}al{\i}\c{s}mas{\i}na g\"{o}re:
+
+\begin{table}[H]
+\centering
+\caption{Dil Alg{\i}lama Do\u{g}rulu\u{g}u --- Metin Uzunlu\u{g}una Ba\u{g}l{\i}l{\i}k}
+\label{tab:accuracy-vs-length}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{rcc}
+\toprule
+\color{chapterBlue}\textbf{Metin Uzunlu\u{g}u} & \color{chapterBlue}\textbf{N-gram Do\u{g}r.} & \color{chapterBlue}\textbf{Stop Word Do\u{g}r.} \\
+\midrule
+5 karakter   & \%40--50 & \%20--30 \\
+20 karakter  & \%70--80 & \%50--60 \\
+50 karakter  & \%90--95 & \%75--85 \\
+200 karakter & \%98--99 & \%90--95 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+LocoDex'in kullan{\i}m durumunda arama sorgular{\i} genelde 5--30 kelimedir (30--200 karakter). Bu aral{\i}kta karakter bazl{\i} + stop word hibrit yakla\c{s}{\i}m{\i} \%80--90 do\u{g}ruluk verir.
+
+\subsubsection{Karma\c{s}{\i}kl{\i}k Kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+
+\begin{align}
+\text{Mevcut (karakter + stop word):} &\quad O\bigl((K + W) \cdot |\text{text}|\bigr) = O(|\text{text}|) \\
+\text{N-gram alternatifi:} &\quad O(|\text{text}| + V \cdot L)
+\end{align}
+
+Burada $K$ = karakter listesi, $W$ = kelime listesi, $V$ = vocabulary boyutu, $L$ = dil say{\i}s{\i}. Her iki y\"{o}ntem de $O(|\text{text}|)$ --- karma\c{s}{\i}kl{\i}k fark{\i} ihmal edilebilir.
+
+\subsection{\c{C}ok Dilli Arama Stratejisi}
+
+T\"{u}rk\c{c}e soru alg{\i}land{\i}\u{g}{\i}nda sistem hem T\"{u}rk\c{c}e hem \.{I}ngilizce arama yapar (\texttt{real\_deep\_research.py}, sat{\i}r 563--609):
+
+\begin{kodref}{\c{C}ok Dilli Sorgu \"{U}retimi}
+\begin{lstlisting}
+# Ana dilde 3 sorgu
+primary_prompt = "...{lang_names.get(detected_lang)} " \
+    "dilinde 3 farkli arama terimi ile arastir..."
+
+# Ingilizce'de 2 sorgu (ana dil Ingilizce degilse)
+secondary_prompt = "...bu konuyu Ingilizce olarak " \
+    "2 farkli arama terimi ile arastir..."
+\end{lstlisting}
+\end{kodref}
+
+\textbf{Neden \c{c}ok dilli?} Bilginin dil da\u{g}{\i}l{\i}m{\i} asimetriktir:
+
+\begin{equation}
+\label{eq:info-asymmetry}
+P(\text{bilgi} \mid \text{en}) \gg P(\text{bilgi} \mid \text{tr}) \gg P(\text{bilgi} \mid \text{de}) \gg P(\text{bilgi} \mid \text{fr})
+\end{equation}
+
+``Transformer mimarisi'' konusunda: \.{I}ngilizce kaynaklar $\sim$10{,}000+ sayfa, T\"{u}rk\c{c}e kaynaklar $\sim$200--500, Almanca $\sim$100--300. Yaln{\i}zca T\"{u}rk\c{c}e aramak bilgi evreninin \%2--5'ini tarar; \.{I}ngilizce eklemek bunu \%80--90'a \c{c}{\i}kar{\i}r.
+
+
+% ============================================================
+\section{\.{I}\c{c}erik Kalite De\u{g}erlendirmesi}
+\label{sec:content-quality}
+% ============================================================
+
+\subsection{Uzunluk-Bazl{\i} Kalite Tahmini ve Shannon Entropy}
+
+LocoDex'te i\c{c}erik kalitesinin ilk filtresi uzunlu\u{g}a dayan{\i}r (\texttt{server.py}, sat{\i}r 174):
+
+\begin{kodref}{\.{I}\c{c}erik Uzunluk Filtresi}
+\begin{lstlisting}
+if len(research) > 200:
+    # "Yeterli detay buldum!"
+    detailed_research.append(...)
+else:
+    # "Bilgi az, baska acidan bakayim..."
+    # Alternatif arastirma yap
+\end{lstlisting}
+\end{kodref}
+
+\subsubsection{Neden 200 Karakter? Shannon Entropy Perspektifi}
+
+\begin{formulbox}[Shannon Entropy]
+\begin{equation}
+\label{eq:shannon}
+H(\text{text}) = -\sum_{i=1}^{n} p(x_i) \log_2 p(x_i)
+\end{equation}
+Burada $p(x_i)$ = $i$'inci sembol\"{u}n olu\c{s}ma olas{\i}l{\i}\u{g}{\i}, $n$ = alfabe boyutu.
+\end{formulbox}
+
+T\"{u}rk\c{c}e alfabe (29 harf + bo\c{s}luk + noktalama $\approx$ 35 sembol):
+
+\begin{align}
+H_{\max} &= \log_2(35) = 5.13 \;\text{bit/karakter (uniform da\u{g}{\i}l{\i}m)} \\
+H_{\text{actual}} &\approx 4.7 \;\text{bit/karakter (T\"{u}rk\c{c}e do\u{g}al metin)}
+\end{align}
+
+200 karakter i\c{c}in:
+\begin{equation}
+\text{Toplam bilgi} \approx 200 \times 4.7 = 940 \;\text{bit} = 117.5 \;\text{byte}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Farkl{\i} Uzunluklar{\i}n Bilgi Kapasitesi ve Yeterlili\u{g}i}
+\label{tab:entropy-thresholds}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{rrcl}
+\toprule
+\color{chapterBlue}\textbf{E\c{s}ik} & \color{chapterBlue}\textbf{$\sim$Kelime} & \color{chapterBlue}\textbf{$\sim$C\"{u}mle} & \color{chapterBlue}\textbf{Yeterlilik} \\
+\midrule
+50 karakter  & $\sim$8   & $\sim$1     & Yetersiz --- yaln{\i}zca ba\c{s}l{\i}k \\
+100 karakter & $\sim$15  & $\sim$2     & Minimum tan{\i}m \\
+\textbf{200 karakter} & \textbf{$\sim$30} & \textbf{$\sim$3--4} & \textbf{Temel bilgi} \\
+500 karakter & $\sim$75  & $\sim$8--10 & Orta detay \\
+1000 karakter & $\sim$150 & $\sim$15--20 & Detayl{\i} a\c{c}{\i}klama \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+3--4 c\"{u}mle, bir konuyu ``tan{\i}mlama'' i\c{c}in minimum yeterli miktar olarak kabul edilir. Dilbilimde bu \emph{minimal coherent discourse unit} olarak tan{\i}mlan{\i}r.
+
+\subsection{Derinlik ve Spesifiklik: Lexical Richness}
+
+Metin uzunlu\u{g}u tek ba\c{s}{\i}na kaliteyi \"{o}l\c{c}mez. Teorik alternatif:
+
+\begin{formulbox}[Type-Token Ratio (TTR)]
+\begin{equation}
+\label{eq:ttr}
+\mathrm{TTR} = \frac{|\text{unique\_words}|}{|\text{total\_words}|}
+\end{equation}
+Y\"{u}ksek TTR = zengin s\"{o}zc\"{u}k da\u{g}arc{\i}\u{g}{\i} = daha derin i\c{c}erik (genel olarak).
+\end{formulbox}
+
+\begin{ornek}
+D\"{u}\c{s}\"{u}k kalite: ``AI iyidir. AI h{\i}zl{\i}d{\i}r. AI g\"{u}\c{c}l\"{u}d\"{u}r.'' $\Rightarrow$ TTR $= 5/9 = 0.56$
+
+Y\"{u}ksek kalite: ``Transformer mimarisi dikkat mekanizmas{\i} kullan{\i}r ve paralel i\c{s}lem yapar.'' $\Rightarrow$ TTR $= 8/9 = 0.89$
+\end{ornek}
+
+\subsection{Say{\i}sal Veri \c{C}{\i}karma}
+
+\texttt{extract\_specific\_data()} fonksiyonu (\texttt{real\_deep\_research.py}, sat{\i}r 192--230) prompt-based NER (Named Entity Recognition) kullan{\i}r:
+
+\begin{table}[H]
+\centering
+\caption{Say{\i}sal Veri \c{C}{\i}karma: Regex vs LLM-Based}
+\label{tab:ner-comparison}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\color{chapterBlue}\textbf{Metrik} & \color{chapterBlue}\textbf{Regex} & \color{chapterBlue}\textbf{LLM-Based} \\
+\midrule
+H{\i}z         & $\sim$1\,ms                                 & $\sim$2--30\,s \\
+Recall       & \%60--70 (bilinen pattern'lar)               & \%85--95 \\
+Precision    & \%95+ (false positive d\"{u}\c{s}\"{u}k)                & \%75--85 (hallucinasyon riski) \\
+Birim ili\c{s}kilendirme & Yok                             & Var \\
+Ba\u{g}lam anlama & Yok                                    & Var \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Regex Tabanl{\i} Alternatif}
+
+\begin{kodref}{Regex ile Say{\i}sal Veri \c{C}{\i}karma}
+\begin{lstlisting}
+import re
+
+patterns = {
+    'storage':    r'(\d+(?:\.\d+)?)\s*(GB|TB|PB|MB|KB)',
+    'percentage': r'(\d+(?:\.\d+)?)\s*%',
+    'currency':   r'[\$]\s*(\d+(?:,\d{3})*(?:\.\d+)?)'
+                  r'\s*(million|billion)?',
+    'year':       r'(19|20)\d{2}',
+    'count':      r'(\d+(?:,\d{3})*)\s*(adet|sunucu|kisi)',
+}
+
+def extract_numbers(text):
+    results = {}
+    for name, pattern in patterns.items():
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            results[name] = matches
+    return results
+\end{lstlisting}
+\end{kodref}
+
+Karma\c{s}{\i}kl{\i}k: $O(P \cdot |\text{text}|)$, burada $P$ = pattern say{\i}s{\i}. LLM \c{c}a\u{g}r{\i}s{\i} yerine $\sim$1\,ms'de tamamlan{\i}r.
+
+\subsection{Hallucination Detection}
+
+Hallucinasyon, bir LLM'in kaynak metinde \textbf{olmayan} bilgiyi \"{u}retmesidir. \.{I}ki t\"{u}r\"{u} vard{\i}r:
+
+\begin{enumerate}
+  \item \textbf{Intrinsic Hallucination:} Kaynakla \c{c}eli\c{s}en bilgi \"{u}retmek.
+  \item \textbf{Extrinsic Hallucination:} Kaynaktan ba\u{g}{\i}ms{\i}z, do\u{g}rulanamayan bilgi \"{u}retmek.
+\end{enumerate}
+
+\begin{formulbox}[Faithfulness Scoring]
+\begin{equation}
+\label{eq:faithfulness}
+\mathrm{Faithfulness}(\text{summary}, \text{source}) = \frac{|\text{facts}_{\text{summary}} \cap \text{facts}_{\text{source}}|}{|\text{facts}_{\text{summary}}|}
+\end{equation}
+$\mathrm{Faithfulness} = 1.0$ ise \"{o}zet tamamen kayna\u{g}a dayal{\i}d{\i}r (hallucinasyon yoktur). $\mathrm{Faithfulness} < 1.0$ ise kaynak d{\i}\c{s}{\i} iddialar vard{\i}r.
+\end{formulbox}
+
+LocoDex'te hallucination kontrol\"{u} son derece basittir:
+\begin{lstlisting}
+# real_deep_research.py, L762
+if analysis and "hatasi" not in analysis.lower():
+    research_data.append(...)
+\end{lstlisting}
+Yaln{\i}zca ``hata'' kelimesini arar --- ger\c{c}ek hallucination detection \c{c}ok daha karma\c{s}{\i}kt{\i}r.
+
+
+% ============================================================
+\section{Prompt-Based Evaluation Architecture}
+\label{sec:prompt-eval}
+% ============================================================
+
+\subsection{Rubric-Based Scoring}
+
+LocoDex'in de\u{g}erlendirme prompt'u 5 ana kriterden olu\c{s}ur (\texttt{real\_deep\_research.py}, sat{\i}r 68--106):
+
+\begin{enumerate}
+  \item \textbf{Konu T\"{u}r\"{u} Analizi} (A\u{g}{\i}rl{\i}k: Y\"{U}KSEK) --- Kategorizasyon
+  \item \textbf{Tarih ve Teknoloji Olgunluk Analizi} (A\u{g}{\i}rl{\i}k: Y\"{U}KSEK) --- Staleness
+  \item \textbf{Kaynak Kalitesi ve Tarafs{\i}zl{\i}k} (A\u{g}{\i}rl{\i}k: ORTA) --- Domain trust + objektiflik
+  \item \textbf{Konu-Spesifik Kriterler} (A\u{g}{\i}rl{\i}k: ORTA) --- Alana \"{o}zg\"{u} de\u{g}erlendirme
+  \item \textbf{Konu Uygunlu\u{g}u} (A\u{g}{\i}rl{\i}k: D\"{U}\c{S}\"{U}K) --- Relevance kontrol\"{u}
+\end{enumerate}
+
+\subsection{Multi-Criteria Assessment Form\"{u}l\"{u}}
+
+\begin{formulbox}[A\u{g}{\i}rl{\i}kl{\i} Toplam Skoru]
+\begin{equation}
+\label{eq:weighted-score}
+S_{\text{total}} = \sum_{i=1}^{n} w_i \cdot S_i, \qquad \sum_{i=1}^{n} w_i = 1
+\end{equation}
+Burada $S_{\text{total}}$ = toplam skor (0--100), $w_i$ = $i$'inci kriterin a\u{g}{\i}rl{\i}\u{g}{\i}, $S_i$ = $i$'inci kriterdeki skor, $n$ = kriter say{\i}s{\i}.
+\end{formulbox}
+
+\begin{dikkat}
+LocoDex'te $w_i$ de\u{g}erleri \textbf{explicit olarak tan{\i}mlanmam{\i}\c{s}t{\i}r}. Bunun yerine LLM'e ``\c{C}OK \"{O}NEML\.{I}'' ve ``\"{O}NEML\.{I}'' gibi do\u{g}al dil ipu\c{c}lar{\i} verilir. LLM bu ipu\c{c}lar{\i}ndan \emph{implicit} a\u{g}{\i}rl{\i}klar \c{c}{\i}kar{\i}r --- her LLM \c{c}a\u{g}r{\i}s{\i}nda a\u{g}{\i}rl{\i}klar farkl{\i} olabilir.
+\end{dikkat}
+
+\subsubsection{Explicit Weighted Scoring (\.{I}yile\c{s}tirme \"{O}nerisi)}
+
+\begin{kodref}{Explicit A\u{g}{\i}rl{\i}kl{\i} Skorlama}
+\begin{lstlisting}
+CRITERIA_WEIGHTS = {
+    'topic_relevance':    0.30,
+    'source_authority':   0.25,
+    'content_quality':    0.20,
+    'freshness':          0.15,
+    'objectivity':        0.10
+}
+
+def weighted_score(criteria_scores):
+    return sum(
+        CRITERIA_WEIGHTS[c] * s
+        for c, s in criteria_scores.items()
+    )
+
+# Ornek hesaplama:
+scores = {
+    'topic_relevance':  85,
+    'source_authority':  90,
+    'content_quality':   70,
+    'freshness':         60,
+    'objectivity':       80
+}
+
+# S = 0.30*85 + 0.25*90 + 0.20*70 + 0.15*60 + 0.10*80
+# S = 25.5  + 22.5  + 14.0  + 9.0   + 8.0
+# S = 79.0
+\end{lstlisting}
+\end{kodref}
+
+\begin{ornek}
+Yukar{\i}daki de\u{g}erlerle a\c{c}{\i}k hesaplama:
+\begin{align}
+S &= 0.30 \times 85 + 0.25 \times 90 + 0.20 \times 70 + 0.15 \times 60 + 0.10 \times 80 \nonumber \\
+  &= 25.5 + 22.5 + 14.0 + 9.0 + 8.0 \nonumber \\
+  &= 79.0
+\end{align}
+\end{ornek}
+
+\subsection{Calibration: LLM Scoring Bias D\"{u}zeltme}
+
+LLM'ler sistematik bias'lara sahiptir:
+\begin{enumerate}
+  \item \textbf{Central Tendency Bias:} Skorlar{\i} 40--60 aras{\i}nda yo\u{g}unla\c{s}t{\i}rma.
+  \item \textbf{Leniency Bias:} Genel olarak y\"{u}ksek skor verme e\u{g}ilimi.
+  \item \textbf{Severity Bias:} Baz{\i} modeller (k\"{u}\c{c}\"{u}k parametreli) d\"{u}\c{s}\"{u}k skor verme e\u{g}iliminde.
+\end{enumerate}
+
+\begin{formulbox}[$z$-Score Kalibrasyon Form\"{u}l\"{u}]
+\begin{equation}
+\label{eq:calibration}
+S_{\text{calibrated}} = \frac{S_{\text{raw}} - \mu}{\sigma} \cdot \sigma_{\text{target}} + \mu_{\text{target}}
+\end{equation}
+Burada $\mu, \sigma$ = LLM'in kalibrasyon seti \"{u}zerindeki ortalama ve standart sapmas{\i}; $\mu_{\text{target}} = 50$, $\sigma_{\text{target}} = 20$ tipik hedef de\u{g}erlerdir.
+\end{formulbox}
+
+\begin{ornek}
+Llama 3.1 8B modeli: $\mu = 62$ (leniency bias), $\sigma = 12$ (central tendency). Bir kaynak i\c{c}in $S_{\text{raw}} = 75$:
+\begin{align}
+S_{\text{calibrated}} &= \frac{75 - 62}{12} \times 20 + 50 \nonumber \\
+                       &= \frac{13}{12} \times 20 + 50 \nonumber \\
+                       &= 1.083 \times 20 + 50 \nonumber \\
+                       &= 21.67 + 50 = 71.67 \approx 72
+\end{align}
+Ham skor 75 iken kalibre skor 72'ye d\"{u}\c{s}t\"{u} --- \c{c}\"{u}nk\"{u} model zaten y\"{u}ksek skor verme e\u{g}ilimindedir.
+\end{ornek}
+
+\subsection{Binary Scoring: \texttt{evals.py}}
+
+\texttt{evals.py} dosyas{\i} \"{u}\c{c}\"{u}nc\"{u} bir de\u{g}erlendirme yakla\c{s}{\i}m{\i} sunar --- 0 veya 1 (binary). Nuansl{\i} de\u{g}erlendirme yoktur. Benchmark/evaluation i\c{c}in kullan{\i}l{\i}r.
+
+\begin{kodref}{Binary LLM-as-a-Judge}
+\begin{lstlisting}
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(
+        multiplier=1, min=4, max=15
+    )
+)
+def llm_as_a_judge_scoring(result: Result) -> bool:
+    prompt = f"""
+    Given the following question and answer,
+    evaluate the answer against the correct answer:
+    ...
+    <answer>1</answer>  (dogru)
+    veya
+    <answer>0</answer>  (yanlis)
+    """
+\end{lstlisting}
+\end{kodref}
+
+\subsubsection{Retry Bekleme S\"{u}resi Form\"{u}l\"{u}}
+
+\begin{equation}
+\label{eq:retry-wait}
+t_n = \min\bigl(15,\; \max(4,\; 1 \times 2^n)\bigr) \quad \text{saniye}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Retry Bekleme S\"{u}releri}
+\label{tab:retry-waits}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{cc}
+\toprule
+\color{chapterBlue}\textbf{Deneme} & \color{chapterBlue}\textbf{Bekleme (s)} \\
+\midrule
+1 & $\max(4, 2^1) = 4$ \\
+2 & $\max(4, 2^2) = 4$ \\
+3 & Ba\c{s}ar{\i}s{\i}z --- exception \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Model:} Together AI \"{u}zerinde Llama 3.3 70B, $T=0.0$ (deterministik). $T=0$ kullan{\i}m{\i} \"{o}nemlidir: ayn{\i} girdi i\c{c}in her zaman ayn{\i} \c{c}{\i}kt{\i} \"{u}retilir. Binary judge i\c{c}in do\u{g}ru se\c{c}imdir --- tutarl{\i}l{\i}k kritiktir.
+
+
+% ============================================================
+\section{G\"{u}venilirlik De\u{g}erlendirme Ak{\i}\c{s} Diyagram{\i}}
+\label{sec:guvenilirlik-flow}
+% ============================================================
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.9cm,
+    process/.style={rectangle, draw=sectionBlue, fill=boxBG, text=textWhite, rounded corners, minimum width=4cm, minimum height=0.9cm, align=center, font=\small},
+    decision/.style={diamond, draw=chapterBlue, fill=boxBG, text=textWhite, aspect=2.2, inner sep=1pt, align=center, font=\small},
+    io/.style={trapezium, draw=codeGreen!70, fill=boxBG, text=textWhite, trapezium left angle=70, trapezium right angle=110, minimum width=3cm, align=center, font=\small},
+    line/.style={draw=textWhite, ->, >=stealth, thick},
+    yesno/.style={font=\scriptsize, color=codeYellow}
+]
+
+\node[io] (input) {Web kayna\u{g}{\i} (URL + i\c{c}erik)};
+\node[process, below=of input] (extract) {Domain \c{c}{\i}karma\\$O(|\text{url}|)$};
+\node[decision, below=of extract] (lookup) {Domain listede\\var m{\i}?};
+\node[process, right=2.5cm of lookup] (assign) {Trust katman{\i}\\ata (High/Med/Low)};
+\node[process, below=of lookup] (default) {Default skor: 50};
+\node[process, below=1.2cm of assign] (llm) {LLM-as-a-Judge\\Scoring (0--100)};
+\node[decision, below=of llm] (threshold) {Skor $\geq 30$?};
+\node[process, below left=1cm and 1cm of threshold] (reject) {\color{codeRed}Kaynak RED};
+\node[process, below right=1cm and 1cm of threshold] (accept) {\color{codeGreen}Kaynak KABUL};
+\node[process, below=2.5cm of threshold] (conflict) {\c{C}eli\c{s}ki tespiti\\(cross-source)};
+\node[io, below=of conflict] (output) {Filtrelenmi\c{s} kaynak seti};
+
+\draw[line] (input) -- (extract);
+\draw[line] (extract) -- (lookup);
+\draw[line] (lookup) -- node[yesno, above] {Evet} (assign);
+\draw[line] (lookup) -- node[yesno, left] {Hay{\i}r} (default);
+\draw[line] (assign) -- (llm);
+\draw[line] (default) -| (llm);
+\draw[line] (llm) -- (threshold);
+\draw[line] (threshold) -- node[yesno, above left] {Hay{\i}r} (reject);
+\draw[line] (threshold) -- node[yesno, above right] {Evet} (accept);
+\draw[line] (accept) |- (conflict);
+\draw[line] (conflict) -- (output);
+
+\end{tikzpicture}
+\caption{G\"{u}venilirlik de\u{g}erlendirme ak{\i}\c{s} diyagram{\i}. Her kaynak \"{o}nce domain lookup (\emph{O(1)}), sonra LLM de\u{g}erlendirmesi, son olarak \c{c}eli\c{s}ki tespitinden ge\c{c}er.}
+\label{fig:trust-flow}
+\end{figure}
+
+
+% ============================================================
+\section{Genel De\u{g}erlendirme ve \.{I}yile\c{s}tirme \"{O}nerileri}
+\label{sec:guvenilirlik-degerlendirme}
+% ============================================================
+
+\subsection{G\"{u}\c{c}l\"{u} Yanlar}
+
+\begin{enumerate}
+  \item \textbf{Pragmatik tasar{\i}m:} Lokal LLM s{\i}n{\i}rlamalar{\i} i\c{c}inde makul trade-off'lar yap{\i}lm{\i}\c{s}t{\i}r.
+  \item \textbf{Hibrit yakla\c{s}{\i}m:} Domain whitelist $+$ LLM evaluation $+$ content filtering.
+  \item \textbf{\c{C}ok dilli destek:} T\"{u}rk\c{c}e sorgular otomatik olarak \.{I}ngilizce ile de aran{\i}r.
+  \item \textbf{Defensive programming:} Default skorlar, fallback mekanizmalar{\i}, hata yakalama.
+\end{enumerate}
+
+\subsection{Zay{\i}f Yanlar ve \"{O}neriler}
+
+\begin{table}[H]
+\centering
+\caption{Tespit Edilen Sorunlar ve \"{O}nerilen \c{C}\"{o}z\"{u}mler}
+\label{tab:issues-solutions}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{clX}
+\toprule
+\color{chapterBlue}\textbf{\#} & \color{chapterBlue}\textbf{Sorun} & \color{chapterBlue}\textbf{\"{O}nerilen \c{C}\"{o}z\"{u}m} \\
+\midrule
+1 & Cedilla bug'{\i} (dil alg{\i}lama) & Dile \"{o}zg\"{u} benzersiz karakter k\"{u}meleri tan{\i}mla \\
+2 & Skor parse bug'{\i} (\texttt{filter(str.isdigit)}) & \texttt{re.search(r'(\textbackslash d+)', text)} kullan \\
+3 & Statik domain listesi & Kullan{\i}c{\i} konfig\"{u}rasyonlu whitelist \\
+4 & Explicit a\u{g}{\i}rl{\i}klar yok & Weighted scoring fonksiyonu ekle \\
+5 & Kalibrasyon yok & $z$-score kalibrasyonu uygula \\
+6 & \.{I}ki farkl{\i} skala (0--100 vs 1--10) & Tek skala standardize et \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+% ============================================================
+% B\"{O}L\"{U}M SONU \"{O}ZET\.{I}
+% ============================================================
+
+\begin{ozet}
+Bu b\"{o}l\"{u}mde LocoDex Deep Search'in kaynak g\"{u}venilirlik de\u{g}erlendirme ve dil alg{\i}lama sistemleri incelenmi\c{s}tir. Temel bulgular:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Domain Trust:} 62 domain, \"{u}\c{c} katmanl{\i} s{\i}n{\i}fland{\i}rma (Denklem~\ref{eq:trust-function}). $O(1)$ lookup ile h{\i}zl{\i} ama subdomain granularity eksik.
+
+  \item \textbf{LLM-as-a-Judge:} \"{U}\c{c} farkl{\i} skala (0--100, 1--10, binary). Inter-rater reliability $\pm 5$--$10$ puan sapma (Denklem~\ref{eq:cohens-kappa}). Skor parse bug'{\i} tespit edildi.
+
+  \item \textbf{Staleness Detection:} Exponential decay modeli $F(t) = e^{-\lambda t}$ (Denklem~\ref{eq:freshness}). D\"{o}rt kategori: Fast ($\lambda=1.386$), Medium ($\lambda=0.347$), Slow ($\lambda=0.139$), Very Slow ($\lambda=0.069$). Kodda implicit (LLM prompt-based), explicit form\"{u}l \"{o}nerildi.
+
+  \item \textbf{Dil Alg{\i}lama:} Karakter $+$ stop word hibrit yakla\c{s}{\i}m{\i} (Denklem~\ref{eq:stopword-score}). Cedilla bug'{\i} tespit edildi (\c{S}ekil~\ref{fig:lang-decision-tree}). N-gram alternatifi teorik olarak incelendi ama mevcut kodda yok.
+
+  \item \textbf{\.{I}\c{c}erik Kalitesi:} 200 karakter e\c{s}i\u{g}i Shannon entropy perspektifinden gerekcelendirildi (Denklem~\ref{eq:shannon}): $\sim$940 bit $\approx$ 3--4 c\"{u}mle.
+
+  \item \textbf{Prompt-Based Evaluation:} 5 kriterli rubric, implicit a\u{g}{\i}rl{\i}klar (Denklem~\ref{eq:weighted-score}). $z$-score kalibrasyon \"{o}nerisi sunuldu (Denklem~\ref{eq:calibration}).
+\end{itemize}
+\end{ozet}

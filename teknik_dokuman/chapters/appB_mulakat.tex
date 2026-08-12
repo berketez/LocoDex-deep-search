@@ -1,0 +1,262 @@
+% ============================================================
+%  EK B: MÜLAKAT HAZIRLIK - 20 TEKNİK SORU VE CEVAP
+% ============================================================
+
+Bu ek, LocoDex Deep Search projesiyle ilgili bir teknik m\"{u}lakatta sorulabilecek 20~soruyu ve detayl{\i} cevaplar{\i}n{\i} i\c{c}erir.
+
+% --- SORU 1 ---
+\begin{mulakat}{LocoDex Deep Search nedir? Bir c\"{u}mlede a\c{c}{\i}klay{\i}n.}
+LocoDex Deep Search, kullan{\i}c{\i}n{\i}n kendi bilgisayar{\i}nda \c{c}al{\i}\c{s}an lokal LLM'ler (Gemma~3, Llama~3.1, Mixtral) kullanarak web ara\c{s}t{\i}rmas{\i} yapan, kaynaklar{\i} g\"{u}venilirlik skoruyla de\u{g}erlendiren ve \c{c}ok dilli kapsaml{\i} raporlar \"{u}reten a\c{c}{\i}k kaynak bir derin ara\c{s}t{\i}rma servisidir.
+
+\textbf{Anahtar noktalar:} (1)~Tamamen lokal --- gizlilik. (2)~\c{C}ok dilli --- T\"{u}rk\c{c}e/\.{I}ngilizce/Frans{\i}zca/Almanca. (3)~Kaynak de\u{g}erlendirmesi --- g\"{u}venilirlik skoru. (4)~\.{I}teratif --- eksik alan tespiti ve doldurma. (5)~WebSocket streaming --- ger\c{c}ek zamanl{\i} ilerleme.
+\end{mulakat}
+
+% --- SORU 2 ---
+\begin{mulakat}{Neden WebSocket kulland{\i}n{\i}z? REST API yeterli olmaz m{\i}yd{\i}?}
+REST API, istek-yan{\i}t modelidir. Bir ara\c{s}t{\i}rma 2--5 dakika s\"{u}rer. REST ile kullan{\i}c{\i} ya sonucu bekler (k\"{o}t\"{u} UX), ya da polling yapar (gereksiz trafik).
+
+WebSocket \c{c}ift y\"{o}nl\"{u} kal{\i}c{\i} ba\u{g}lant{\i}d{\i}r. Avantajlar{\i}:
+\begin{itemize}
+  \item Sunucu, ilerleme bilgisini anl{\i}k olarak g\"{o}nderir (push model)
+  \item \.{I}stemci, ara\c{s}t{\i}rmay{\i} iptal edebilir
+  \item TCP ba\u{g}lant{\i}s{\i} tek seferlik kurulur, HTTP overhead yok
+  \item Keepalive mekanizmas{\i} (30 saniyede bir ping) ba\u{g}lant{\i} kopmas{\i}n{\i} \"{o}nler
+\end{itemize}
+
+Alternatif Server-Sent Events (SSE) tek y\"{o}nl\"{u}d\"{u}r --- kullan{\i}c{\i}dan sunucuya mesaj g\"{o}nderilemez. gRPC ise taray{\i}c{\i} deste\u{g}i s{\i}n{\i}rl{\i}d{\i}r.
+\end{mulakat}
+
+% --- SORU 3 ---
+\begin{mulakat}{Asenkron programlama neden kritik? GIL sorunu nas{\i}l a\c{s}{\i}l{\i}yor?}
+Python GIL (Global Interpreter Lock), ayn{\i} anda sadece bir thread'in Python bytecode \c{c}al{\i}\c{s}t{\i}rmas{\i}na izin verir. CPU-bound i\c{s}ler i\c{c}in bu darbogaz olur.
+
+Ancak LocoDex \textbf{I/O-bound}'dur --- web araması, LLM API \c{c}a\u{g}r{\i}lar{\i}, dosya yazma. GIL, I/O beklerken serbest b{\i}rak{\i}l{\i}r. asyncio event loop, I/O bekleyen coroutine'leri ask{\i}ya al{\i}r ve ba\c{s}ka coroutine'i \c{c}al{\i}\c{s}t{\i}r{\i}r. B\"{o}ylece tek thread'de y\"{u}zlerce e\c{s} zamanl{\i} I/O i\c{s}lemi y\"{u}r\"{u}t\"{u}l\"{u}r.
+
+\texttt{aiohttp} asenkron HTTP istekleri yapar, \texttt{asyncio.wait\_for} timeout y\"{o}netir, \texttt{concurrent.futures.ThreadPoolExecutor} senkron k\"{u}t\"{u}phaneleri (googlesearch) async wrapper'a sarar.
+\end{mulakat}
+
+% --- SORU 4 ---
+\begin{mulakat}{LLM provider abstraction nas{\i}l \c{c}al{\i}\c{s}{\i}r? LiteLLM ne yapar?}
+LiteLLM, Adapter pattern uygulayan bir k\"{u}t\"{u}phanedir. 100+ LLM provider'{\i} OpenAI API standard{\i}na d\"{o}n\"{u}\c{s}t\"{u}r\"{u}r.
+
+Model string format{\i}: \texttt{"ollama/gemma3:12b"} veya \texttt{"lmstudio/model-name"}. LiteLLM, provider prefix'ini parse eder, uygun API endpoint'ine y\"{o}nlendirir ve yan{\i}t{\i} standart formata d\"{o}n\"{u}\c{s}t\"{u}r\"{u}r.
+
+Pratikte Docker networking sorunlar{\i} nedeniyle \texttt{real\_deep\_research.py} do\u{g}rudan \texttt{aiohttp} ile Ollama/LM~Studio API'lerini \c{c}a\u{g}{\i}r{\i}r. Fallback chain: LM~Studio (port~1234) $\rightarrow$ Ollama (port~11434) $\rightarrow$ hata.
+\end{mulakat}
+
+% --- SORU 5 ---
+\begin{mulakat}{Temperature parametresi matematiksel olarak ne yapar?}
+Temperature $T$, softmax fonksiyonundaki logit'leri \"{o}l\c{c}ekler:
+\begin{equation}
+  p_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}
+\end{equation}
+
+$T \to 0$: Da\u{g}{\i}l{\i}m en y\"{u}ksek logit'e yo\u{g}unla\c{s}{\i}r (deterministic, greedy decoding).
+
+$T = 0.3$: D\"{u}\c{s}\"{u}k yarat{\i}c{\i}l{\i}k --- ara\c{s}t{\i}rma analizi i\c{c}in ideal. Tutarl{\i} ve do\u{g}ru sonu\c{c}lar.
+
+$T = 0.7$: Orta yarat{\i}c{\i}l{\i}k --- lokal ara\c{s}t{\i}rma modu i\c{c}in. Daha \c{c}e\c{s}itli i\c{c}erik.
+
+$T = 1.0$: Orijinal da\u{g}{\i}l{\i}m. $T > 1$: Y\"{u}ksek entropi, rastgele \"{u}retim.
+
+LocoDex'te $T=0.3$ tercih edilir \c{c}\"{u}nk\"{u} ara\c{s}t{\i}rma do\u{g}rulu\u{g}u yarat{\i}c{\i}l{\i}ktan \"{o}nemlidir.
+\end{mulakat}
+
+% --- SORU 6 ---
+\begin{mulakat}{Retry mekanizmas{\i} nas{\i}l \c{c}al{\i}\c{s}{\i}r? Exponential backoff nedir?}
+Exponential backoff, her ba\c{s}ar{\i}s{\i}z denemeden sonra bekleme s\"{u}resini \"{u}stel olarak art{\i}r{\i}r. Tenacity'de form\"{u}l, \emph{clamp}'li \"{u}stel form\"{u}ld\"{u}r:
+\begin{equation}
+  t_k = \mathrm{clamp}\bigl(\text{multiplier} \cdot 2^{k-1},\; t_{\min},\; t_{\max}\bigr)
+\end{equation}
+
+LocoDex'te Tenacity k\"{u}t\"{u}phanesi: \texttt{stop\_after\_attempt(3)} (en fazla 3 deneme), \texttt{wait\_exponential(multiplier=1, min=4, max=15)}.
+
+\textbf{Ger\c{c}ek davran{\i}\c{s}:} \texttt{multiplier=1} ile ilk \"{u}\c{c} attempt'in \"{u}stel de\u{g}eri ($1, 2, 4$) zaten \texttt{min=4} taban{\i}n{\i}n alt{\i}nda kal{\i}r, dolay{\i}s{\i}yla bekleme s\"{u}releri sabit 4\,s'dir:
+
+\begin{itemize}
+  \item 1.~deneme ba\c{s}ar{\i}s{\i}z $\rightarrow$ \textbf{4\,s} bekle.
+  \item 2.~deneme ba\c{s}ar{\i}s{\i}z $\rightarrow$ \textbf{4\,s} bekle (\textbf{8 de\u{g}il!}, $\min$ taban{\i} \"{u}stel art{\i}\c{s}{\i} bo\u{g}ar).
+  \item 3.~deneme ba\c{s}ar{\i}s{\i}z $\rightarrow$ hata f{\i}rlat.
+\end{itemize}
+
+Toplam en k\"{o}t\"{u} durum: $4 + 4 = \mathbf{8}$\,s. Empirik olarak da do\u{g}rulanm{\i}\c{s}t{\i}r. Daha agresif bir backoff i\c{c}in \texttt{multiplier=4} kullan{\i}lmal{\i}; o zaman s{\i}ras{\i}yla $4, 8$\,s ve toplam $12$\,s olur.
+
+Bu yine de thundering herd problemini \"{o}nler --- t\"{u}m istemciler ayn{\i} anda tekrar denemez.
+\end{mulakat}
+
+% --- SORU 7 ---
+\begin{mulakat}{Web arama hibrit stratejisi nas{\i}l \c{c}al{\i}\c{s}{\i}r?}
+\"{U}\c{c} katmanl{\i} fallback chain:
+\begin{enumerate}
+  \item \textbf{Google Search} (\texttt{googlesearch-python}): En kapsaml{\i} index. Rate limiting riski.
+  \item \textbf{DuckDuckGo} (\texttt{duckduckgo-search}): API key gerektirmez. \c{C}ince i\c{c}erik filtrelenir.
+  \item \textbf{Tavily} (\texttt{tavily-python}): AI-optimize sonu\c{c}lar. API key gerekir.
+\end{enumerate}
+
+Her sorgu i\c{c}in \"{o}nce Google denenir. Google ba\c{s}ar{\i}s{\i}zsa DuckDuckGo, o da ba\c{s}ar{\i}s{\i}zsa Tavily kullan{\i}l{\i}r. Maksimum 4--5 farkl{\i} sorgu \"{u}retilir, her biri 4--12 sonu\c{c} d\"{o}ner. Toplamda 16--60 aday kaynak incelenir.
+\end{mulakat}
+
+% --- SORU 8 ---
+\begin{mulakat}{Kaynak g\"{u}venilirli\u{g}i nas{\i}l de\u{g}erlendirilir?}
+\.{I}ki a\c{s}amal{\i} hibrit sistem:
+
+\textbf{A\c{s}ama~1: Domain listesi} (O(1) lookup) --- \texttt{arxiv.org}, \texttt{nature.com} = y\"{u}ksek; \texttt{wikipedia.org} = orta; \texttt{blog.*} = d\"{u}\c{s}\"{u}k.
+
+\textbf{A\c{s}ama~2: LLM-as-a-judge} --- LLM, i\c{c}eri\u{g}i okur ve \c{s}u kriterleri de\u{g}erlendirir: (a)~konu t\"{u}r\"{u} (teknoloji/tarih/bilim), (b)~bayatl{\i}k (fast tech: 6 ay, slow: 5 y{\i}l), (c)~tarafs{\i}zl{\i}k, (d)~kalite. 0--100 aras{\i} skor \"{u}retir.
+
+30'un alt{\i}ndaki kaynaklar filtrelenir. Kalan kaynaklar skora g\"{o}re s{\i}ralan{\i}r. Y\"{u}ksek skorlu kaynaklar rapora daha fazla etki eder.
+\end{mulakat}
+
+% --- SORU 9 ---
+\begin{mulakat}{Dil alg{\i}lama nas{\i}l \c{c}al{\i}\c{s}{\i}r?}
+\.{I}ki y\"{o}ntemli hibrit yakla\c{s}{\i}m:
+
+\textbf{1.~Karakter tabanl{\i}:} T\"{u}rk\c{c}e karakterler (\c{c}, \u{g}, {\i}, \"{o}, \c{s}, \"{u}) i\c{c}in regex: \texttt{re.search(r'[\c{c}\u{g}{\i}\"{o}\c{s}\"{u}...]', text)}. Bunlar Unicode'da benzersizdir.
+
+\textbf{2.~Kelime tabanl{\i}:} Stop word frekans skorlamas{\i}. T\"{u}rk\c{c}e: ``nedir'', ``nas{\i}l'', ``ve'', ``bir''. Her e\c{s}le\c{s}me +1 puan. En y\"{u}ksek skorlu dil se\c{c}ilir.
+
+T\"{u}rk\c{c}e tespit edilirse \c{c}ok dilli strateji: hem T\"{u}rk\c{c}e hem \.{I}ngilizce arama sorgular{\i} \"{u}retilir. Bu, bilgi kapsam{\i}n{\i} art{\i}r{\i}r.
+\end{mulakat}
+
+% --- SORU 10 ---
+\begin{mulakat}{\.{I}teratif ara\c{s}t{\i}rma (gap analysis) ne anlama gelir?}
+Tek seferde ara\c{s}t{\i}rma yapmak yerine, toplanan bilgiyi analiz edip eksik alanlar{\i} tespit ederiz. LLM'e \c{s}u soruyu sorar{\i}z: ``Bu konudaki mevcut ara\c{s}t{\i}rma verilerinde hangi \"{o}nemli alanlar eksik?''
+
+LLM, ``g\"{u}ncel geli\c{s}meler eksik'' veya ``teknik detaylar yetersiz'' gibi gap'ler tespit eder. Sonra bu gap'lere y\"{o}nelik ek aramalar yap{\i}l{\i}r.
+
+Bu, bilgi kapsama oran{\i}n{\i} (coverage ratio) art{\i}r{\i}r. Stopping criterion: gap analizi ``kapsaml{\i} ara\c{s}t{\i}rma tamamland{\i}'' dedi\u{g}inde durur.
+\end{mulakat}
+
+% --- SORU 11 ---
+\begin{mulakat}{Prompt engineering'de hangi teknikler kullan{\i}l{\i}yor?}
+\begin{enumerate}
+  \item \textbf{System prompt + User prompt ayr{\i}m{\i}:} System prompt davran{\i}\c{s}{\i} belirler, user prompt g\"{o}revi verir.
+  \item \textbf{Structured output:} ``SADECE BU FORMATTA CEVAP VER: G\"{u}venilirlik: [skor]'' gibi kal{\i}plarla parse edilebilir \c{c}{\i}kt{\i} al{\i}n{\i}r.
+  \item \textbf{Role playing:} ``Sen kaynak g\"{u}venilirlik uzman{\i}s{\i}n'' --- modelin uzmanl{\i}k moduna ge\c{c}mesini sa\u{g}lar.
+  \item \textbf{YAML template:} Prompt'lar \texttt{prompts.yaml} dosyas{\i}nda saklan{\i}r, koddan ayr{\i}l{\i}r.
+  \item \textbf{Chain-of-thought:} ``D\"{u}\c{s}\"{u}nme ve analiz yakla\c{s}{\i}m{\i}: Verileri ele\c{s}tirel olarak sorgula...'' gibi y\"{o}nlendirmeler.
+\end{enumerate}
+\end{mulakat}
+
+% --- SORU 12 ---
+\begin{mulakat}{Docker'dan host makinedeki Ollama'ya nas{\i}l ba\u{g}lan{\i}l{\i}r?}
+Docker container izole bir network namespace'tedir. Host makinedeki servislere (Ollama port~11434, LM~Studio port~1234) eri\c{s}mek i\c{c}in \"{u}\c{c}l\"{u} fallback:
+
+\begin{enumerate}
+  \item \texttt{host.docker.internal} --- Docker Desktop (macOS/Windows) bu DNS'i otomatik \c{c}\"{o}zer.
+  \item \texttt{192.168.65.1} --- Docker Desktop default gateway IP.
+  \item \texttt{172.17.0.1} --- Docker bridge network gateway.
+  \item \texttt{localhost} --- Son \c{c}are, genellikle \c{c}al{\i}\c{s}maz (\c{c}\"{u}nk\"{u} container'{\i}n kendi localhost'unu g\"{o}sterir).
+\end{enumerate}
+
+Ayr{\i}ca \texttt{OLLAMA\_HOST\_IP} environment variable ile manuel IP verilebilir.
+\end{mulakat}
+
+% --- SORU 13 ---
+\begin{mulakat}{Podcast \"{u}retim sistemi nas{\i}l \c{c}al{\i}\c{s}{\i}r?}
+\"{U}\c{c} a\c{s}amal{\i} pipeline:
+
+\textbf{1.~Script \"{u}retimi:} LLM (Llama~3.1 70B), ara\c{s}t{\i}rma raporundan Host-Guest diyalogu \"{u}retir. Pydantic schema ile JSON format{\i} zorunlu k{\i}l{\i}n{\i}r. Her sat{\i}r $\leq$100 karakter.
+
+\textbf{2.~Ses sentezi:} Together~AI Cartesia Sonic modeli, her diyalog sat{\i}r{\i}n{\i} MP3'e d\"{o}n\"{u}\c{s}t\"{u}r\"{u}r. Host: ``laidback woman'', Guest: ``customer support man'' sesleri.
+
+\textbf{3.~Birle\c{s}tirme:} T\"{u}m MP3 segment'leri bytearray'de birle\c{s}tirilir. Base64 encoding ile HTML'e g\"{o}m\"{u}lebilir veya dosyaya kaydedilebilir.
+
+\textbf{Nyquist teoremi:} $f_{\text{sample}} \geq 2 \times f_{\max}$. 44\,100\,Hz sampling rate, insan konu\c{s}mas{\i}n{\i}n \"{u}st frekans{\i}n{\i} ($\sim$20\,kHz) kapsar.
+\end{mulakat}
+
+% --- SORU 14 ---
+\begin{mulakat}{LLM-as-a-judge de\u{g}erlendirme sistemi nas{\i}l \c{c}al{\i}\c{s}{\i}r?}
+Ara\c{s}t{\i}rma kalitesini \"{o}l\c{c}mek i\c{c}in ba\c{s}ka bir LLM'i hakem olarak kullan{\i}r{\i}z:
+
+\begin{enumerate}
+  \item Soruyu, agent yan{\i}t{\i}n{\i} ve do\u{g}ru cevab{\i} LLM'e veririz
+  \item LLM, \texttt{<reasoning>} etiketinde mant{\i}\u{g}{\i}n{\i} a\c{c}{\i}klar
+  \item \texttt{<answer>} etiketinde 0 (yanl{\i}\c{s}) veya 1 (do\u{g}ru) d\"{o}ner
+  \item Esnek e\c{s}le\c{s}tirme: ``LeBron'' = ``LeBron James'' kabul edilir
+\end{enumerate}
+
+Tenacity ile 3 kez denenir. Llama~3.3 70B Instruct modeli kullan{\i}l{\i}r. Binary scoring bas{i}t ama etkilidir.
+\end{mulakat}
+
+% --- SORU 15 ---
+\begin{mulakat}{Cross-platform path y\"{o}netimi nas{\i}l yap{\i}l{\i}r?}
+\texttt{PlatformPaths} s{\i}n{\i}f{\i}, Strategy pattern ile OS-ba\u{g}{\i}ms{\i}z dizin y\"{o}netimi sa\u{g}lar:
+
+\begin{itemize}
+  \item \textbf{macOS:} \texttt{\textasciitilde/Library/Application Support/LocoDex}
+  \item \textbf{Windows:} \texttt{\%APPDATA\%/LocoDex}
+  \item \textbf{Linux:} \texttt{\$XDG\_DATA\_HOME/locodex} veya \texttt{\textasciitilde/.local/share/locodex}
+  \item \textbf{Docker:} \texttt{/app}
+\end{itemize}
+
+\texttt{create\_safe\_filename()} ge\c{c}ersiz karakterleri filtreler: Windows'ta \texttt{< > : " / \textbackslash | ? *}, Unix'te \texttt{/} ve null. Dosya ad{\i} 50 karakterle s{\i}n{\i}rl{\i}d{\i}r.
+\end{mulakat}
+
+% --- SORU 16 ---
+\begin{mulakat}{Pydantic v2'nin avantajlar{\i} nelerdir? Neden dataclass yerine?}
+Pydantic \textbf{runtime type validation} sa\u{g}lar:
+\begin{itemize}
+  \item \texttt{ResearchPlan(queries=123)} $\rightarrow$ ValidationError f{\i}rlat{\i}r (list bekleniyor)
+  \item JSON serialization/deserialization: \texttt{model\_validate\_json()}, \texttt{model\_json\_schema()}
+  \item \texttt{Field(description=...)} ile metadata ve swagger dok\"{u}mantasyonu
+\end{itemize}
+
+\texttt{@dataclass(frozen=True)} ise immutable veri yap{\i}lar{\i} i\c{c}in: \texttt{SearchResult} de\u{g}i\c{s}tirilemez, hash'lenebilir, set/dict key olarak kullan{\i}labilir. Deduplication i\c{c}in \"{o}nemli.
+
+Proje her ikisini de kullan{\i}r: Pydantic API input/output i\c{c}in, dataclass i\c{c} veri yap{\i}lar{\i} i\c{c}in.
+\end{mulakat}
+
+% --- SORU 17 ---
+\begin{mulakat}{\c{C}eli\c{s}kili bilgi tespiti (conflicting information detection) nas{\i}l \c{c}al{\i}\c{s}{\i}r?}
+Farkl{\i} kaynaklardan gelen bilgiler \c{c}eli\c{s}ebilir. \"{O}rne\u{g}in: Kaynak~A ``X \c{s}irketi 2024'te 100M\$ gelir elde etti'' derken, Kaynak~B ``X \c{s}irketi 2024'te zarar etti'' diyebilir.
+
+Sistem, en g\"{u}venilir 5 kayna\u{g}{\i} LLM'e vererek \c{s}unlar{\i} sorar:
+\begin{enumerate}
+  \item \c{C}eli\c{s}kili bilgiler var m{\i}?
+  \item Hangi kaynak daha g\"{u}venilir?
+  \item Siyasi/ideolojik \"{o}nyarg{\i} var m{\i}?
+  \item Farkl{\i} bak{\i}\c{s} a\c{c}{\i}lar{\i} dengeli mi?
+\end{enumerate}
+
+\c{C}eli\c{s}ki tespit edilirse rapora ``farkl{\i} kaynaklar \c{c}eli\c{s}kili bilgi sunmaktad{\i}r'' notu eklenir.
+\end{mulakat}
+
+% --- SORU 18 ---
+\begin{mulakat}{Bu projenin scalability s{\i}n{\i}rlar{\i} nelerdir?}
+Mevcut mimari tek kullan{\i}c{\i}l{\i} tasarlanm{\i}\c{s}t{\i}r. S{\i}n{\i}rlamalar:
+
+\begin{enumerate}
+  \item \textbf{LLM bottleneck:} Lokal model ayn{\i} anda bir istek i\c{s}leyebilir. \c{C}\"{o}z\"{u}m: model parallelism veya queue sistemi.
+  \item \textbf{Bellek:} 12B model $\approx$ 8\,GB RAM. E\c{s} zamanl{\i} kullan{\i}c{\i}lar i\c{c}in yetersiz.
+  \item \textbf{Rate limiting:} Google/DuckDuckGo arama motorlar{\i} IP ba\c{s}{\i}na k{\i}s{\i}tlama uygular.
+  \item \textbf{Tek i\c{s}lem:} Ara\c{s}t{\i}rma pipeline seri \c{c}al{\i}\c{s}{\i}r --- 10 kaynak seri analiz edilir.
+\end{enumerate}
+
+\textbf{\c{C}\"{o}z\"{u}mler:} (a)~Message queue (Redis/RabbitMQ) ile istek kuyrukla. (b)~Birden fazla model instance'{\i} y\"{u}k dengeleyici arkas{\i}nda \c{c}al{\i}\c{s}t{\i}r. (c)~Kaynak analizini paralelle\c{s}tir (\texttt{asyncio.gather}).
+\end{mulakat}
+
+% --- SORU 19 ---
+\begin{mulakat}{G\"{u}venlik a\c{c}{\i}klar{\i} nelerdir? Nas{\i}l \"{o}nlem al{\i}nd{\i}?}
+\begin{enumerate}
+  \item \textbf{HTML injection:} BeautifulSoup ile script/style/iframe etiketleri temizlenir.
+  \item \textbf{Content size limit:} 10\,MB HTTP response, 50\,KB text limiti --- DoS \"{o}nleme.
+  \item \textbf{User-Agent:} Sorumlu scraping i\c{c}in \"{o}zel User-Agent header.
+  \item \textbf{API key g\"{u}venli\u{g}i:} Anahtarlar environment variable ile y\"{o}netilir, koda g\"{o}m\"{u}lmez.
+  \item \textbf{Input sanitization:} Dosya ad{\i}nda ge\c{c}ersiz karakter filtreleme.
+  \item \textbf{Redirect limiti:} \texttt{max\_redirects=3} --- a\c{c}{\i}k redirect sald{\i}r{\i}s{\i}n{\i} \"{o}nler.
+\end{enumerate}
+
+\textbf{Eksikler:} Prompt injection korunmas{\i} zay{\i}f --- k\"{o}t\"{u} niyetli web sayfas{\i} LLM'e prompt enjekte edebilir.
+\end{mulakat}
+
+% --- SORU 20 ---
+\begin{mulakat}{Bu projeyi geli\c{s}tirmek i\c{c}in 3 \"{o}ncelikli ad{\i}m ne olurdu?}
+\begin{enumerate}
+  \item \textbf{RAG (Retrieval-Augmented Generation):} Ge\c{c}mi\c{s} ara\c{s}t{\i}rmalar{\i} vekt\"{o}r veritaban{\i}na (ChromaDB, FAISS) kaydet. Yeni ara\c{s}t{\i}rmada benzer ge\c{c}mi\c{s} sonu\c{c}lar{\i} kullan --- hem h{\i}z hem kalite artar.
+
+  \item \textbf{Multi-agent parallelism:} Her alt konuyu ayr{\i} bir agent'a ver. 5 alt konu $\times$ 3 dakika = 15 dakika seri. Paralelde: 3 dakika. Amdahl yasas{\i}na g\"{o}re $\sim$5$\times$ h{\i}zlanma.
+
+  \item \textbf{Streaming rapor \"{u}retimi:} Final raporu tek seferde de\u{g}il, b\"{o}l\"{u}m b\"{o}l\"{u}m \"{u}ret. Kullan{\i}c{\i} ilk b\"{o}l\"{u}m\"{u} hemen g\"{o}r\"{u}r. LLM token streaming ile sat{\i}r sat{\i}r g\"{o}nder.
+\end{enumerate}
+\end{mulakat}

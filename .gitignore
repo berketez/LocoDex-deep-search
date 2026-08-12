@@ -62,6 +62,20 @@ config/secrets.json
 research_results/
 *.md.backup
 
+# Local model comparison runs — timings are hardware-specific and do not
+# reproduce on other machines, so they stay out of the repository.
+karsilastirma_testi/
+
+# LaTeX build artifacts (teknik_dokuman/); sources are tracked, output is not
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+teknik_dokuman/*.log
+teknik_dokuman/*.pdf
+
 # Research cache database
 research_cache.db
 

@@ -1,0 +1,1000 @@
+% ============================================================
+%  B\"{O}L\"{U}M 6: \.{I}TERAT\.{I}F ARA\c{S}TIRMA P\.{I}PEL\.{I}NE VE RAPOR SENTEZ\.{I}
+% ============================================================
+
+Bu b\"{o}l\"{u}m, LocoDex Deep Search'un temel mekanizmas{\i}n{\i} --- iteratif ara\c{s}t{\i}rma pipeline'{\i}n{\i} ve \c{c}ok kaynakl{\i} rapor sentez sistemini --- matematik temelleriyle a\c{c}{\i}klar. Pipeline'{\i}n her a\c{s}amas{\i}n{\i}n zaman karma\c{s}{\i}kl{\i}\u{g}{\i}, hata yay{\i}l{\i}m modeli, Amdahl yasas{\i} ile paralellik analizi ve token b\"{u}t\c{c}e y\"{o}netimi ele al{\i}n{\i}r.
+
+
+% ============================================================
+\section{Pipeline A\c{s}amalar{\i} ve Zaman Karma\c{s}{\i}kl{\i}\u{g}{\i} Analizi}
+\label{sec:pipeline_stages}
+% ============================================================
+
+LocoDex Deep Search pipeline'{\i} 8~a\c{s}amadan olu\c{s}ur. Her a\c{s}aman{\i}n koddaki kar\c{s}{\i}l{\i}\u{g}{\i}n{\i} ve asimptotik s\"{u}re analizini sunuyoruz.
+
+\subsection{A\c{s}ama 1: Topic Analysis (Konu Analizi)}
+
+\begin{kodref}{real\_deep\_research.py L504--540, L565--591}
+\texttt{detect\_language()} fonksiyonu karakter ve kelime listesi taramas{\i} yapar. Ard{\i}ndan LLM \c{c}a\u{g}r{\i}s{\i} ile konu analizi ger\c{c}ekle\c{s}tirilir.
+\end{kodref}
+
+Zaman karma\c{s}{\i}kl{\i}\u{g}{\i}:
+\begin{equation}
+\label{eq:topic_time}
+T_{\text{topic}} = T_{\text{lang}} + T_{\text{llm}} = \mathcal{O}(k \cdot n) + \bigl(L_{\text{api}} + t_{\text{gen}} \cdot m_{\text{tok}}\bigr)
+\end{equation}
+burada $k$ dil karakter k\"{u}mesi boyutu ($\sim$30), $n$ sorgu uzunlu\u{g}u (karakter), $L_{\text{api}}$ a\u{g} gecikmesi (50--200\,ms), $t_{\text{gen}}$ token ba\c{s}{\i}na \"{u}retim s\"{u}resi (30--80\,ms/token) ve $m_{\text{tok}}$ maksimum token say{\i}s{\i}d{\i}r.
+
+\begin{ornek}
+$n = 200$ karakter, $k = 30$ karakter $\Rightarrow$ $6{,}000$ kar\c{s}{\i}la\c{s}t{\i}rma ($< 1$\,ms). LLM \c{c}a\u{g}r{\i}s{\i}: $L_{\text{api}} = 100$\,ms, $200 \times 50$\,ms $= 10$\,s. Toplam $T_{\text{topic}} \approx 10$\,s. Dil alg{\i}lama ihmal edilebilir.
+\end{ornek}
+
+\subsection{A\c{s}ama 2: Query Generation (Sorgu Olu\c{s}turma)}
+
+\begin{kodref}{smart\_multilingual\_research.py L213--298}
+\texttt{generate\_smart\_queries()} fonksiyonu LLM'e konu verir ve $Q$ adet arama sorgusu \"{u}retir.
+\end{kodref}
+
+\.{I}ki farkl{\i} ger\c{c}ekleme vard{\i}r:
+\begin{itemize}
+  \item \textbf{SmartMultilingualResearcher:} Tek LLM \c{c}a\u{g}r{\i}s{\i} $\rightarrow$ 4 sorgu
+  \item \textbf{DeepResearcher:} \.{I}ki LLM \c{c}a\u{g}r{\i}s{\i} (planning + JSON parsing) $\rightarrow$ de\u{g}i\c{s}ken sorgu say{\i}s{\i}
+\end{itemize}
+
+\begin{equation}
+\label{eq:query_time}
+T_{\text{query}} = c \cdot T_{\text{llm}} \quad (c = 1 \text{ veya } 2)
+\end{equation}
+
+\subsection{A\c{s}ama 3: Web Search (Web Aramas{\i})}
+
+\begin{kodref}{real\_deep\_research.py L363--430}
+$Q$ sorgunun her biri $R$ sonu\c{c} d\"{o}nd\"{u}ren web aramas{\i} yapar. Google \"{o}ncelikli, Tavily/DuckDuckGo fallback.
+\end{kodref}
+
+\begin{equation}
+\label{eq:search_time}
+T_{\text{search}} = Q \cdot \bigl(T_{\text{google}} + T_{\text{rate}}\bigr) = Q \cdot (T_{\text{google}} + 1)
+\end{equation}
+burada $T_{\text{rate}} = 1$\,s sabit bekleme s\"{u}residir (\texttt{asyncio.sleep(1)}).
+
+\begin{ornek}
+$Q = 5$, $T_{\text{google}} = 2$\,s $\Rightarrow$ $T_{\text{search}} = 5 \times 3 = 15$\,s. Her sorgu $R = 8$ sonu\c{c} d\"{o}nd\"{u}r\"{u}rse toplam $40$ URL.
+\end{ornek}
+
+\subsection{A\c{s}ama 4: Content Extraction (\.{I}\c{c}erik \c{C}{\i}karma)}
+
+\begin{kodref}{smart\_multilingual\_research.py L388--429}
+Her URL i\c{c}in HTTP GET + BeautifulSoup ile HTML parsing + metin \c{c}{\i}karma yap{\i}l{\i}r.
+\end{kodref}
+
+\begin{equation}
+\label{eq:extract_time}
+T_{\text{extract}} = S \cdot \bigl(T_{\text{http}} + T_{\text{parse}}\bigr), \quad T_{\text{parse}} = \mathcal{O}(H)
+\end{equation}
+burada $S$ toplam URL say{\i}s{\i}, $H$ HTML dok\"{u}man boyutudur (karakter). BeautifulSoup'un DOM a\u{g}ac{\i} olu\c{s}turma karma\c{s}{\i}kl{\i}\u{g}{\i} $\mathcal{O}(H)$'dir.
+
+\begin{ornek}
+$S = 20$, $T_{\text{http}} = 2$\,s (ortalama), $T_{\text{parse}} = 0.1$\,s $\Rightarrow$ $T_{\text{extract}} = 20 \times 2.1 = 42$\,s. \texttt{real\_deep\_research.py}'de seri i\c{s}lenir.
+\end{ornek}
+
+\subsection{A\c{s}ama 5: Source Evaluation (Kaynak De\u{g}erlendirme)}
+
+\begin{kodref}{real\_deep\_research.py L52--150}
+Her kaynak i\c{c}in LLM \c{c}a\u{g}r{\i}s{\i} ile 0--100 g\"{u}venilirlik skoru atanir.
+\end{kodref}
+
+\begin{equation}
+\label{eq:eval_time}
+T_{\text{eval}} = S \cdot T_{\text{llm,rel}} = S \cdot \bigl(L_{\text{api}} + t_{\text{gen}} \cdot 200\bigr)
+\end{equation}
+
+\begin{ornek}
+$S = 20$, $T_{\text{llm,rel}} \approx 5$\,s $\Rightarrow$ $T_{\text{eval}} = 100$\,s. Pipeline'{\i}n en yava\c{s} ikinci a\c{s}amas{\i}d{\i}r.
+\end{ornek}
+
+\subsection{A\c{s}ama 6: Synthesis (Bilgi Sentezleme)}
+
+\begin{kodref}{real\_deep\_research.py L152--230, L714--757}
+Her kaynak i\c{c}in i\c{c}erik analizi + spesifik veri \c{c}{\i}karma + \c{c}eli\c{s}ki tespiti.
+\end{kodref}
+
+\begin{equation}
+\label{eq:synthesis_time}
+T_{\text{synth}} = S \cdot \bigl(T_{\text{llm,analysis}} + T_{\text{llm,extract}}\bigr) + T_{\text{llm,conflict}}
+\end{equation}
+
+\subsection{A\c{s}ama 7: Report Generation (Rapor Olu\c{s}turma)}
+
+\begin{kodref}{real\_deep\_research.py L842--891}
+T\"{u}m sentezlenmi\c{s} verilerin tek bir LLM \c{c}a\u{g}r{\i}s{\i}yla raporlanmas{\i}.
+\end{kodref}
+
+\begin{equation}
+\label{eq:report_time}
+T_{\text{report}} = L_{\text{api}} + t_{\text{gen}} \cdot m_{\text{final}}
+\end{equation}
+burada $m_{\text{final}} = 4000$--$5000$ token'dir (en b\"{u}y\"{u}k token b\"{u}t\c{c}esi).
+
+\begin{ornek}
+$4000 \times 50$\,ms/token $= 200$\,s $\approx 3.3$\,dakika. Pipeline'{\i}n \textbf{en yava\c{s}} a\c{s}amas{\i}d{\i}r.
+\end{ornek}
+
+\subsection{A\c{s}ama 8: Quality Assessment (Kalite De\u{g}erlendirmesi)}
+
+\begin{kodref}{smart\_multilingual\_research.py L471--520}
+Mevcut verilerin yeterlili\u{g}i LLM ile de\u{g}erlendirilir, eksik alanlar tespit edilir.
+\end{kodref}
+
+\begin{equation}
+\label{eq:quality_time}
+T_{\text{quality}} = T_{\text{llm,eval}} + T_{\text{llm,json}} \approx 2 \cdot T_{\text{llm}}
+\end{equation}
+
+\subsection{Toplam Pipeline S\"{u}resi}
+
+\begin{formulbox}[Toplam Pipeline S\"{u}resi (Seri \c{C}al{\i}\c{s}ma)]
+\begin{equation}
+\label{eq:total_pipeline}
+T_{\text{total}} = \sum_{i=1}^{8} T_{i} = T_{\text{topic}} + T_{\text{query}} + T_{\text{search}} + T_{\text{extract}} + T_{\text{eval}} + T_{\text{synth}} + T_{\text{report}} + T_{\text{quality}}
+\end{equation}
+Say{\i}sal: $10 + 20 + 15 + 42 + 100 + 310 + 200 + 20 = 717\text{\,s} \approx 12$\,dakika
+\end{formulbox}
+
+\begin{table}[H]
+\centering
+\caption{A\c{s}ama ba\c{s}{\i}na LLM \c{c}a\u{g}r{\i} say{\i}s{\i} ($S=20$ kaynak, $Q=5$ sorgu)}
+\label{tab:llm_calls}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lccX}
+\toprule
+\color{chapterBlue}\textbf{A\c{s}ama} & \color{chapterBlue}\textbf{LLM \c{C}a\u{g}r{\i}} & \color{chapterBlue}\textbf{max\_tokens} & \color{chapterBlue}\textbf{Toplam Token} \\
+\midrule
+Topic Analysis    & 1--2  & 200   & $\sim$300   \\
+Query Generation  & 1--2  & 500   & $\sim$700   \\
+Source Eval       & $S=20$ & 200  & $\sim$4\,000 \\
+Content Analysis  & $S=20$ & 500  & $\sim$10\,000 \\
+Data Extraction   & $S=20$ & 300  & $\sim$6\,000 \\
+Conflict Detection & 1    & 500   & $\sim$500   \\
+Final Report      & 1     & 4000--5000 & $\sim$4\,500 \\
+Quality Check     & 1--2  & 500   & $\sim$700   \\
+\midrule
+\textbf{TOPLAM}   & \textbf{$\sim$67} & & \textbf{$\sim$26\,700} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% --- TikZ: Pipeline Akis Semasi ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=1.1cm and 0.3cm,
+  stage/.style={
+    rectangle, rounded corners=3pt,
+    draw=chapterBlue, fill=boxBG, text=textWhite,
+    minimum width=3.5cm, minimum height=0.9cm,
+    font=\small\bfseries, text centered, align=center
+  },
+  arrow/.style={->, >=stealth, thick, color=sectionBlue},
+  time/.style={font=\scriptsize\color{warnOrange}, anchor=west},
+  loop/.style={->, >=stealth, thick, color=codeRed, dashed}
+]
+
+% Ana asamalar
+\node[stage] (topic) {1. Topic\\Analysis};
+\node[stage, below=of topic] (query) {2. Query\\Generation};
+\node[stage, below=of query] (search) {3. Web\\Search};
+\node[stage, below=of search] (extract) {4. Content\\Extraction};
+\node[stage, below=of extract] (eval) {5. Source\\Evaluation};
+\node[stage, below=of eval] (synth) {6. Synthesis};
+\node[stage, below=of synth] (report) {7. Report\\Generation};
+\node[stage, below=of report] (quality) {8. Quality\\Assessment};
+
+% Oklar
+\draw[arrow] (topic) -- (query);
+\draw[arrow] (query) -- (search);
+\draw[arrow] (search) -- (extract);
+\draw[arrow] (extract) -- (eval);
+\draw[arrow] (eval) -- (synth);
+\draw[arrow] (synth) -- (report);
+\draw[arrow] (report) -- (quality);
+
+% Sureler (sag tarafa)
+\node[time, right=0.5cm of topic]   {$T \approx 10$\,s};
+\node[time, right=0.5cm of query]   {$T \approx 20$\,s};
+\node[time, right=0.5cm of search]  {$T \approx 15$\,s};
+\node[time, right=0.5cm of extract] {$T \approx 42$\,s};
+\node[time, right=0.5cm of eval]    {$T \approx 100$\,s};
+\node[time, right=0.5cm of synth]   {$T \approx 310$\,s};
+\node[time, right=0.5cm of report]  {$T \approx 200$\,s};
+\node[time, right=0.5cm of quality] {$T \approx 20$\,s};
+
+% Iteratif dongu (quality -> query)
+\draw[loop] (quality.west) -- ++(-2.0,0) |- node[pos=0.25, left, font=\scriptsize\color{codeRed}] {Gap var?} (query.west);
+
+% Cikis
+\node[font=\small\color{codeGreen}, below=0.5cm of quality] {Rapor Tamamland{\i}};
+
+\end{tikzpicture}
+\caption{LocoDex ara\c{s}t{\i}rma pipeline'{\i} ak{\i}\c{s} \c{s}emas{\i}. K{\i}rm{\i}z{\i} kesikli ok iteratif d\"{o}ng\"{u}y\"{u} g\"{o}sterir.}
+\label{fig:pipeline_flow}
+\end{figure}
+
+
+% ============================================================
+\section{\.{I}teratif Derinle\c{s}tirme: Gap Analysis}
+\label{sec:iterative_deepening}
+% ============================================================
+
+\subsection{Teorik Temel: Information Foraging Theory}
+
+\.{I}teratif derinle\c{s}tirme, bilgi arama literat\"{u}r\"{u}ndeki \emph{Information Foraging Theory} (Pirolli \& Card, 1999) ile modellenebilir. Temel fikir: bir ara\c{s}t{\i}rmac{\i}n{\i}n bilgi toplama s\"{u}reci, bir y{\i}rt{\i}c{\i} hayvan{\i}n yem arama davran{\i}\c{s}{\i}na benzer. ``Information patch''ler (bilgi adalar{\i}) aras{\i}ndan en verimli olan se\c{c}ilir.
+
+LocoDex'te bu kavram, \texttt{evaluate\_research\_completeness()} (together\_open\_deep\_research.py L409--441) ve \texttt{iterative\_research\_analysis()} (smart\_multilingual\_research.py L471--520) fonksiyonlar{\i}nda somutla\c{s}{\i}r.
+
+\subsection{Bilgi Kapsama Oran{\i} (Coverage Ratio)}
+
+Bir konu $\mathcal{T}$ i\c{c}in gereken bilgi alanlar{\i}n{\i} $K = \{k_1, k_2, \ldots, k_m\}$ olarak tan{\i}mlayal{\i}m. Her iterasyonda bulunan bilgi alt k\"{u}mesini $B_i$ ile g\"{o}sterirsek:
+
+\begin{formulbox}[Bilgi Kapsama Oran{\i}]
+\begin{equation}
+\label{eq:coverage_set}
+\text{Coverage}(i) = \frac{|B_1 \cup B_2 \cup \cdots \cup B_i|}{|K|}
+\end{equation}
+
+S\"{u}rekli uzay yakla\c{s}{\i}m{\i}: her bilgi alan{\i} $k_j$ i\c{c}in bir ``tamamlanma derecesi'' $c_j \in [0,1]$ tan{\i}mlan{\i}r:
+\begin{equation}
+\label{eq:coverage_vec}
+\text{Coverage}(i) = \frac{1}{m} \sum_{j=1}^{m} c_j(i)
+\end{equation}
+\end{formulbox}
+
+\subsection{Azalan Verim Yasas{\i} (Diminishing Returns)}
+
+Her ek iterasyon giderek daha az yeni bilgi getirir. Bu, bilgi kuram{\i}ndaki \emph{redundancy} kavram{\i}na kar\c{s}{\i}l{\i}k gelir. Marginal bilgi art{\i}\c{s}{\i}:
+
+\begin{equation}
+\label{eq:delta_coverage}
+\Delta \text{Coverage}(i) = \text{Coverage}(i) - \text{Coverage}(i-1)
+\end{equation}
+
+Her ad{\i}mda kalan bo\c{s}lu\u{g}u sabit $\alpha$ oran{\i}nda kapatt{\i}\u{g}{\i}m{\i}z{\i} varsayal{\i}m:
+
+\begin{equation}
+\label{eq:coverage_recurrence}
+\text{Coverage}(i) = \text{Coverage}(i-1) + \alpha \cdot \bigl(1 - \text{Coverage}(i-1)\bigr)
+\end{equation}
+
+Bu rek\"{u}rans ba\u{g}{\i}nt{\i}s{\i}n{\i}n \c{c}\"{o}z\"{u}m\"{u} bir geometrik seridir:
+
+\begin{formulbox}[Kapsama Oran{\i} Kapal{\i} Form]
+\begin{equation}
+\label{eq:coverage_closed}
+\text{Coverage}(i) = 1 - (1 - \alpha)^{i}
+\end{equation}
+
+\textbf{T\"{u}retme:}
+\begin{align*}
+\text{Coverage}(0) &= 0 \\
+\text{Coverage}(i) &= \alpha + (1-\alpha) \cdot \text{Coverage}(i-1) \\
+&= \alpha + (1-\alpha)\bigl[\alpha + (1-\alpha)\,\text{Coverage}(i-2)\bigr] \\
+&= \alpha \sum_{k=0}^{i-1} (1-\alpha)^k = \alpha \cdot \frac{1 - (1-\alpha)^i}{\alpha} = 1 - (1-\alpha)^i
+\end{align*}
+\end{formulbox}
+
+\begin{ornek}
+$\alpha = 0.4$ (her iterasyon \%40 yeni bilgi) i\c{c}in:
+\end{ornek}
+
+\begin{table}[H]
+\centering
+\caption{Kapsama oran{\i}n{\i}n iterasyona g\"{o}re de\u{g}i\c{s}imi ($\alpha = 0.4$)}
+\label{tab:coverage}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{ccc}
+\toprule
+\color{chapterBlue}\textbf{\.{I}terasyon $i$} & \color{chapterBlue}\textbf{Coverage} & \color{chapterBlue}\textbf{$\Delta$ Coverage} \\
+\midrule
+0 & 0.000 & --- \\
+1 & 0.400 & 0.400 \\
+2 & 0.640 & 0.240 \\
+3 & 0.784 & 0.144 \\
+4 & 0.870 & 0.086 \\
+5 & 0.922 & 0.052 \\
+6 & 0.953 & 0.031 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% --- TikZ: Coverage vs Iteration Grafigi ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=10cm, height=6cm,
+  xlabel={\.{I}terasyon $i$},
+  ylabel={Coverage$(i)$},
+  xmin=0, xmax=8,
+  ymin=0, ymax=1.1,
+  grid=both,
+  grid style={draw=boxBorder!40},
+  axis background/.style={fill=codeBG},
+  axis line style={color=textWhite},
+  tick style={color=textWhite},
+  xlabel style={color=textWhite},
+  ylabel style={color=textWhite},
+  ticklabel style={color=textWhite},
+  legend style={at={(0.97,0.45)}, anchor=east, fill=boxBG, text=textWhite, draw=boxBorder},
+]
+
+% alpha=0.4
+\addplot[color=chapterBlue, thick, mark=*, mark size=2.5pt] coordinates {
+  (0,0) (1,0.400) (2,0.640) (3,0.784) (4,0.870) (5,0.922) (6,0.953) (7,0.972) (8,0.983)
+};
+\addlegendentry{$\alpha = 0.4$}
+
+% alpha=0.6
+\addplot[color=codeGreen, thick, mark=square*, mark size=2pt, dashed] coordinates {
+  (0,0) (1,0.600) (2,0.840) (3,0.936) (4,0.974) (5,0.990) (6,0.996) (7,0.998) (8,0.999)
+};
+\addlegendentry{$\alpha = 0.6$}
+
+% alpha=0.2
+\addplot[color=warnOrange, thick, mark=triangle*, mark size=2.5pt, dotted] coordinates {
+  (0,0) (1,0.200) (2,0.360) (3,0.488) (4,0.590) (5,0.672) (6,0.738) (7,0.790) (8,0.832)
+};
+\addlegendentry{$\alpha = 0.2$}
+
+% %95 threshold cizgisi
+\addplot[color=codeRed, dashed, thick] coordinates {(0,0.95) (8,0.95)};
+\node[color=codeRed, font=\scriptsize] at (axis cs:7.5,0.99) {\%95 e\c{s}ik};
+
+\end{axis}
+\end{tikzpicture}
+\caption{Bilgi kapsama oran{\i}n{\i}n iterasyon say{\i}s{\i}na g\"{o}re de\u{g}i\c{s}imi. K{\i}rm{\i}z{\i} kesikli \c{c}izgi \%95 durma e\c{s}i\u{g}ini temsil eder.}
+\label{fig:coverage_curve}
+\end{figure}
+
+\subsection{Durma Kriteri (Stopping Criterion)}
+
+Ne zaman ara\c{s}t{\i}rma ``yeterli''? \"{U}\c{c} yakla\c{s}{\i}m vard{\i}r:
+
+\subsubsection{1. B\"{u}t\c{c}e Temelli (Budget-Based)}
+
+LocoDex'te kullan{\i}lan birincil yakla\c{s}{\i}m budur. \texttt{DeepResearcher} s{\i}n{\i}f{\i}nda \texttt{budget=6} parametresi mevcuttur (together\_open\_deep\_research.py L33). Her iterasyonda \texttt{current\_spending} artar:
+\begin{equation}
+\label{eq:budget_stop}
+\text{Dur: } \texttt{current\_spending} \geq \texttt{budget}
+\end{equation}
+
+Bu en basit ama en az ``ak{\i}ll{\i}'' y\"{o}ntemdir. Bilgi yeterli olsa bile b\"{u}t\c{c}e dolana kadar devam eder (gereksiz maliyet), veya bilgi yetersiz kalsa bile b\"{u}t\c{c}e bitince durur.
+
+\subsubsection{2. E\c{s}ik Temelli (Threshold-Based)}
+
+Kodda dolayl{\i} olarak kullan{\i}l{\i}r. \texttt{evaluate\_research\_completeness()} bo\c{s} liste d\"{o}nd\"{u}r\"{u}rse iterasyon sonlan{\i}r:
+
+\begin{lstlisting}[caption={E\c{s}ik temelli durma kriteri}, label=lst:threshold_stop]
+additional_queries = [q for q in additional_queries if q]
+if not additional_queries:
+    break  # Durma: ek sorgu gerekmez
+\end{lstlisting}
+
+Matematiksel olarak: $\text{Dur: } Q_{\text{additional}} = \emptyset$.
+
+\subsubsection{3. Marjinal Kazan\c{c} Temelli}
+
+Kodda do\u{g}rudan uygulanm{\i}yor ama en matematiksel yakla\c{s}{\i}m budur:
+\begin{equation}
+\label{eq:marginal_stop}
+\text{Dur: } \Delta\text{Coverage}(i) = \alpha \cdot (1-\alpha)^{i-1} < \varepsilon
+\end{equation}
+
+\c{C}\"{o}z\"{u}m:
+\begin{equation}
+\label{eq:marginal_solution}
+i > 1 + \frac{\ln(\varepsilon / \alpha)}{\ln(1 - \alpha)}
+\end{equation}
+
+\begin{ornek}
+$\alpha = 0.4$, $\varepsilon = 0.05$:
+\[
+i > 1 + \frac{\ln(0.05/0.4)}{\ln(0.6)} = 1 + \frac{\ln 0.125}{\ln 0.6} = 1 + \frac{-2.079}{-0.511} = 1 + 4.07 = 5.07
+\]
+Yani 6 iterasyonda durulur --- bu, LocoDex'in varsay{\i}lan \texttt{budget=6} de\u{g}eriyle uyumludur! $\alpha = 0.4$ makul bir tahminse, 6~iterasyon \%95+ kapsama sa\u{g}lar.
+\end{ornek}
+
+
+% ============================================================
+\section{Progress Tracking: Non-Linear \.{I}lerleme E\u{g}risi}
+\label{sec:progress}
+% ============================================================
+
+\subsection{Koddaki G\"{o}zlem}
+
+Progress de\u{g}erleri incelendi\u{g}inde lineer olmayan bir da\u{g}{\i}l{\i}m g\"{o}r\"{u}l\"{u}r:
+
+\begin{table}[H]
+\centering
+\caption{smart\_multilingual\_research.py progress da\u{g}{\i}l{\i}m{\i}}
+\label{tab:progress_values}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{cX}
+\toprule
+\color{chapterBlue}\textbf{Progress} & \color{chapterBlue}\textbf{A\c{s}ama} \\
+\midrule
+0.01 & Ba\c{s}lang{\i}\c{c} \\
+0.05 & Dil alg{\i}lama \\
+0.10 & Strateji belirleme \\
+0.15--0.60 & Web aramas{\i} ($i \times 0.15$ ad{\i}mlarla) \\
+0.50--0.77 & Kaynak analizi ($i \times 0.03$ ad{\i}mlarla) \\
+0.70 & Eksiklik analizi \\
+0.90 & Rapor haz{\i}rlan{\i}yor \\
+1.00 & Tamamland{\i} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Neden Sigmoid Benzeri?}
+
+\.{I}lerleme e\u{g}risi $P(t)$ zamana kar\c{s}{\i} \c{c}izildi\u{g}inde bir S-e\u{g}risi olu\c{s}ur. Logistic fonksiyonla modellenir:
+
+\begin{formulbox}[Sigmoid \.{I}lerleme Modeli]
+\begin{equation}
+\label{eq:sigmoid_progress}
+P(t) = \frac{1}{1 + e^{-k \cdot (t - t_{\text{mid}})}}
+\end{equation}
+burada $k$ e\u{g}im parametresi, $t_{\text{mid}}$ e\u{g}ri orta noktas{\i}d{\i}r.
+\end{formulbox}
+
+\"{U}\c{c} faz:\
+\begin{enumerate}
+  \item \textbf{Ba\c{s}lang{\i}\c{c} yava\c{s}l{\i}\u{g}{\i}} ($P \sim 0.0$--$0.2$): LLM inference (konu analizi, sorgu \"{u}retimi). Sonu\c{c} g\"{o}r\"{u}nmez.
+  \item \textbf{Orta h{\i}z} ($P \sim 0.2$--$0.8$): Web aramas{\i} ve i\c{c}erik analizi. Her URL i\c{s}lendik\c{c}e progress artar.
+  \item \textbf{Son yava\c{s}lama} ($P \sim 0.8$--$1.0$): Final rapor \"{u}retimi (4000--5000 token). Tek b\"{u}y\"{u}k LLM \c{c}a\u{g}r{\i}s{\i}.
+\end{enumerate}
+
+Daha do\u{g}ru model --- a\u{g}{\i}rl{\i}kl{\i} a\c{s}ama tamamlanmas{\i}:
+\begin{equation}
+\label{eq:weighted_progress}
+P(n) = \frac{\sum_{i=1}^{n} w_i}{\sum_{i=1}^{N} w_i}
+\end{equation}
+burada $w_i$, $i$.~a\c{s}aman{\i}n progress a\u{g}{\i}rl{\i}\u{g}{\i}d{\i}r.
+
+\subsection{Alg{\i}lanan \.{I}lerleme: Weber--Fechner Yasas{\i}}
+
+\.{I}nsan alg{\i}s{\i} i\c{c}in Weber--Fechner yasas{\i} ge\c{c}erlidir:
+
+\begin{equation}
+\label{eq:weber_fechner}
+P_{\text{perceived}} = k \cdot \ln\!\left(\frac{P_{\text{real}}}{I_0}\right)
+\end{equation}
+
+Bu, \%10$\to$\%20 ge\c{c}i\c{s}inin \%80$\to$\%90 ge\c{c}i\c{s}inden ``daha b\"{u}y\"{u}k'' alg{\i}lanmas{\i}na neden olur. \c{C}\"{o}z\"{u}m \"{o}nerisi --- logaritmik progress mapping:
+\begin{equation}
+\label{eq:log_progress}
+P_{\text{displayed}}(t) = \frac{\log(1 + \alpha \cdot P_{\text{real}}(t))}{\log(1 + \alpha)}
+\end{equation}
+
+\begin{ornek}
+$\alpha = 9$ i\c{c}in: $P_{\text{real}} = 0.1 \Rightarrow P_{\text{displayed}} = 0.301$; \quad $P_{\text{real}} = 0.9 \Rightarrow P_{\text{displayed}} = 0.954$.
+\end{ornek}
+
+
+% ============================================================
+\section{Paralel vs Seri Ara\c{s}t{\i}rma: Amdahl Yasas{\i}}
+\label{sec:pipe-amdahl}
+% ============================================================
+
+\subsection{Teorik Temel}
+
+Amdahl Yasas{\i} (Gene Amdahl, 1967), bir program{\i}n paralelle\c{s}tirmeyle elde edebilece\u{g}i maksimum h{\i}zlanmay{\i} verir.
+
+\begin{formulbox}[Amdahl Yasas{\i}]
+\begin{equation}
+\label{eq:pipe-amdahl}
+S(N) = \frac{1}{(1 - P) + \dfrac{P}{N}}
+\end{equation}
+burada $P \in [0,1]$ paralelle\c{s}tirilebilir oran, $N$ paralel i\c{s}\c{c}i say{\i}s{\i}d{\i}r.
+
+\textbf{T\"{u}retme:} Toplam seri s\"{u}re $T_s$ olsun. Bu s\"{u}renin $P$ oran{\i} paralelle\c{s}tirilebilir:
+\begin{align}
+T_{\text{seri}} &= T_s \notag \\
+T_{\text{paralel}} &= (1-P) \cdot T_s + \frac{P \cdot T_s}{N} \notag \\
+S(N) = \frac{T_{\text{seri}}}{T_{\text{paralel}}} &= \frac{T_s}{(1-P) \cdot T_s + P \cdot T_s / N} = \frac{1}{(1-P) + P/N} \label{eq:amdahl_derivation}
+\end{align}
+
+$N \to \infty$ limitinde:
+\begin{equation}
+\label{eq:amdahl_limit}
+S_{\max} = \frac{1}{1 - P}
+\end{equation}
+\end{formulbox}
+
+\subsection{LocoDex'te Paralellik Analizi}
+
+\begin{table}[H]
+\centering
+\caption{Pipeline a\c{s}amalar{\i}n{\i}n paralelle\c{s}tirebilirlik s{\i}n{\i}fland{\i}rmas{\i}}
+\label{tab:parallelism}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\color{chapterBlue}\textbf{A\c{s}ama} & \color{chapterBlue}\textbf{Ba\u{g}{\i}ml{\i}l{\i}k} & \color{chapterBlue}\textbf{S\"{u}re (s)} & \color{chapterBlue}\textbf{Paralel?} \\
+\midrule
+Topic Analysis    & Ba\c{s}lang{\i}\c{c}          & 10   & \color{codeRed}Hay{\i}r \\
+Query Generation  & Topic'e ba\u{g}l{\i}      & 20   & \color{codeRed}Hay{\i}r \\
+Web Search        & Ba\u{g}{\i}ms{\i}z sorgular  & 15   & \color{codeGreen}Evet \\
+Content Extraction & Ba\u{g}{\i}ms{\i}z URL'ler & 42   & \color{codeGreen}Evet \\
+Source Evaluation  & Ba\u{g}{\i}ms{\i}z kaynaklar & 100 & \color{codeGreen}Evet \\
+Synthesis         & Ba\u{g}{\i}ms{\i}z kaynaklar  & 310  & \color{codeGreen}Evet \\
+Report Generation & T\"{u}m veriler gerekli & 200  & \color{codeRed}Hay{\i}r \\
+Quality Assessment & Rapora ba\u{g}l{\i}      & 20   & \color{codeRed}Hay{\i}r \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{kodref}{together\_open\_deep\_research.py L308--336}
+\texttt{search\_all\_queries()} fonksiyonu \texttt{asyncio.gather()} kullan{\i}r:
+\begin{lstlisting}
+res_list = await asyncio.gather(*tasks)  # L328
+\end{lstlisting}
+Ancak \texttt{real\_deep\_research.py} ve \texttt{smart\_multilingual\_research.py}'de arama ve analiz SER\.{I} yap{\i}l{\i}r.
+\end{kodref}
+
+$P$ oran{\i} hesab{\i}:
+\begin{align}
+T_{\text{seri}} &= T_{\text{topic}} + T_{\text{query}} + T_{\text{report}} + T_{\text{quality}} = 10 + 20 + 200 + 20 = 250\text{\,s} \notag \\
+T_{\text{par}}  &= T_{\text{search}} + T_{\text{extract}} + T_{\text{eval}} + T_{\text{synth}} = 15 + 42 + 100 + 310 = 467\text{\,s} \notag \\
+P &= \frac{467}{717} = 0.651 \quad (\%65.1) \label{eq:P_ratio}
+\end{align}
+
+\begin{table}[H]
+\centering
+\caption{Amdahl yasas{\i}na g\"{o}re h{\i}zlanma ($P = 0.651$)}
+\label{tab:amdahl_speedup}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabular}{ccc}
+\toprule
+\color{chapterBlue}\textbf{$N$ (i\c{s}\c{c}i)} & \color{chapterBlue}\textbf{Speedup} & \color{chapterBlue}\textbf{S\"{u}re (s)} \\
+\midrule
+1    & 1.00$\times$ & 717 \\
+2    & 1.48$\times$ & 484 \\
+4    & 1.95$\times$ & 368 \\
+8    & 2.33$\times$ & 308 \\
+16   & 2.56$\times$ & 280 \\
+$\infty$ & 2.87$\times$ & 250 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% --- TikZ: Amdahl Grafigi ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=10cm, height=6cm,
+  xlabel={Paralel \.{I}\c{s}\c{c}i Say{\i}s{\i} $N$},
+  ylabel={H{\i}zlanma $S(N)$},
+  xmin=1, xmax=32,
+  ymin=0.8, ymax=4,
+  grid=both,
+  grid style={draw=boxBorder!40},
+  axis background/.style={fill=codeBG},
+  axis line style={color=textWhite},
+  tick style={color=textWhite},
+  xlabel style={color=textWhite},
+  ylabel style={color=textWhite},
+  ticklabel style={color=textWhite},
+  legend style={at={(0.03,0.97)}, anchor=north west, fill=boxBG, text=textWhite, draw=boxBorder},
+  xmode=log,
+  log basis x=2,
+  xtick={1,2,4,8,16,32},
+  xticklabels={1,2,4,8,16,32},
+]
+
+% P=0.651 (LocoDex)
+\addplot[color=chapterBlue, thick, mark=*, mark size=2.5pt, domain=1:32, samples=20]
+  {1/((1-0.651) + 0.651/x)};
+\addlegendentry{$P = 0.651$ (LocoDex)}
+
+% P=0.90 (ideal)
+\addplot[color=codeGreen, thick, dashed, domain=1:32, samples=20]
+  {1/((1-0.90) + 0.90/x)};
+\addlegendentry{$P = 0.90$ (ideal)}
+
+% S_max cizgisi
+\addplot[color=codeRed, dashed] coordinates {(1,2.87) (32,2.87)};
+\node[color=codeRed, font=\scriptsize, anchor=south west] at (axis cs:16,2.87) {$S_{\max} = 2.87$};
+
+\end{axis}
+\end{tikzpicture}
+\caption{Amdahl yasas{\i}na g\"{o}re h{\i}zlanma e\u{g}risi. $P=0.651$ ile maks. h{\i}zlanma $2.87\times$.}
+\label{fig:amdahl}
+\end{figure}
+
+\begin{dikkat}
+$P = 0.651$ ile maksimum teorik h{\i}zlanma sadece $2.87\times$'t{\i}r. Darbo\u{g}az final rapor \"{u}retimidir (200\,s, pipeline'{\i}n \%28'i). 4~paralel worker ile $1.95\times$ h{\i}zlanma ($717\text{\,s} \to 368\text{\,s} \approx 6$\,dk) elde edilir. Pratikte LLM rate limiting nedeniyle etkin $N$ de\u{g}eri $3$--$5$ ile s{\i}n{\i}rl{\i}d{\i}r.
+\end{dikkat}
+
+
+% ============================================================
+\section{Hata Yay{\i}l{\i}m{\i} (Error Propagation)}
+\label{sec:error_propagation}
+% ============================================================
+
+\subsection{Ba\u{g}{\i}ms{\i}z Hata Modeli}
+
+Pipeline'da $i$.~a\c{s}aman{\i}n hata oran{\i} $e_i$ olsun. Hatalar ba\u{g}{\i}ms{\i}z ve k\"{u}m\"{u}latif ise, $n$ a\c{s}ama sonra hatas{\i}z sonu\c{c} olas{\i}l{\i}\u{g}{\i}:
+
+\begin{formulbox}[Ba\u{g}{\i}ms{\i}z Hata Modeli]
+\begin{equation}
+\label{eq:error_independent}
+P_{\text{correct}} = \prod_{i=1}^{n} (1 - e_i)
+\end{equation}
+
+K\"{u}\c{c}\"{u}k $e_i$ de\u{g}erleri i\c{c}in ($e_i \ll 1$):
+\begin{equation}
+\label{eq:error_approx}
+P_{\text{correct}} \approx 1 - \sum_{i=1}^{n} e_i
+\end{equation}
+\end{formulbox}
+
+\begin{table}[H]
+\centering
+\caption{Pipeline a\c{s}amalar{\i} i\c{c}in tahmini hata oranlar{\i}}
+\label{tab:error_rates}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXc}
+\toprule
+\color{chapterBlue}\textbf{A\c{s}ama} & \color{chapterBlue}\textbf{Hata T\"{u}r\"{u}} & \color{chapterBlue}\textbf{$e_i$} \\
+\midrule
+Topic Analysis      & Yanl{\i}\c{s} dil alg{\i}lama     & 0.05 \\
+Query Generation    & Alakas{\i}z sorgu \"{u}retimi       & 0.10 \\
+Web Search          & Sonu\c{c}suz arama             & 0.08 \\
+Content Extraction  & HTTP hatas{\i}/timeout         & 0.15 \\
+Source Evaluation   & Yanl{\i}\c{s} skor                & 0.12 \\
+Synthesis           & Yanl{\i}\c{s} \"{o}zet               & 0.10 \\
+Report Generation   & Tutars{\i}z rapor              & 0.08 \\
+Quality Assessment  & Yanl{\i}\c{s} gap analizi        & 0.10 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{equation}
+\label{eq:error_total}
+P_{\text{correct}} = (0.95)(0.90)(0.92)(0.85)(0.88)(0.90)(0.92)(0.90) = 0.460
+\end{equation}
+
+\begin{equation}
+\label{eq:error_prob}
+P_{\text{error}} = 1 - 0.460 = 0.540 = \%54
+\end{equation}
+
+Bu korkutucu bir rakam: 8~a\c{s}amal{\i} pipeline'da en az bir hatan{\i}n olu\c{s}ma olas{\i}l{\i}\u{g}{\i} \%54. Ancak hatalar{\i}n \c{c}o\u{g}u tolere edilebilir (bir URL'nin timeout olmas{\i} sonucu de\u{g}i\c{s}tirmez).
+
+\subsection{Markov Zinciri Modeli}
+
+Daha sofistike bir model: her a\c{s}ama, \"{o}nceki a\c{s}aman{\i}n \c{c}{\i}kt{\i}s{\i} \"{u}zerinde \c{c}al{\i}\c{s}{\i}r. Hatal{\i} girdi alan a\c{s}aman{\i}n da hatal{\i} \c{c}{\i}kt{\i} verme olas{\i}l{\i}\u{g}{\i} artar: $P(E_i \mid E_{i-1}) > P(E_i)$.
+
+Ge\c{c}i\c{s} matrisi:
+\begin{equation}
+\label{eq:markov_transition}
+\mathbf{T}_i = \begin{pmatrix} 1 - e_i & e_i \\ r_i & 1 - r_i \end{pmatrix}
+\end{equation}
+burada $r_i$, $i$.~a\c{s}aman{\i}n ``hata d\"{u}zeltme'' kapasitesidir. $n$ a\c{s}ama sonras{\i}ndaki durum:
+\begin{equation}
+\label{eq:markov_state}
+\bigl[P_{\text{correct}},\ P_{\text{error}}\bigr]_n = \bigl[1,\ 0\bigr] \cdot \mathbf{T}_1 \cdot \mathbf{T}_2 \cdots \mathbf{T}_n
+\end{equation}
+
+\begin{ornek}
+3 a\c{s}ama, $e = 0.1$, $r = 0.3$:
+\[
+\mathbf{T} = \begin{pmatrix} 0.9 & 0.1 \\ 0.3 & 0.7 \end{pmatrix}
+\]
+\begin{align*}
+\text{A\c{s}ama 1 sonras{\i}:}\quad &[0.9,\ 0.1] \\
+\text{A\c{s}ama 2 sonras{\i}:}\quad &[0.9 \times 0.9 + 0.1 \times 0.3,\ 0.9 \times 0.1 + 0.1 \times 0.7] = [0.84,\ 0.16] \\
+\text{A\c{s}ama 3 sonras{\i}:}\quad &[0.804,\ 0.196]
+\end{align*}
+
+Ba\u{g}{\i}ms{\i}z modelde: $P_{\text{error}} = 1 - 0.9^3 = 0.271$. Markov modelde: $P_{\text{error}} = 0.196$. Fark: $r_i > 0$ oldu\u{g}unda ger\c{c}ek hata oran{\i} ba\u{g}{\i}ms{\i}z modelden \textbf{d\"{u}\c{s}\"{u}kt\"{u}r}. LLM'ler \"{o}nceki a\c{s}amalardaki baz{\i} hatalar{\i} ``d\"{u}zeltebilir''.
+\end{ornek}
+
+\subsection{Hata Telafi Mekanizmalar{\i}}
+
+Kodda be\c{s} temel hata telafi mekanizmas{\i} vard{\i}r:
+
+\begin{enumerate}
+  \item \textbf{Fallback chain:} Google $\to$ Tavily/DuckDuckGo (real\_deep\_research.py L396--420)
+  \item \textbf{Try--except bloklar{\i}:} Her a\c{s}ama kendi hatas{\i}n{\i} yakalar
+  \item \textbf{Varsay{\i}lan de\u{g}erler:} \texttt{reliability\_score=50}, \texttt{language='en'}
+  \item \textbf{LLM retry:} Tenacity ile 3~deneme, \"{u}stel geri \c{c}ekilme (llms.py L37)
+  \item \textbf{\.{I}teratif derinle\c{s}tirme:} Bir iterasyonda eksik kalan bilgi sonraki iterasyonda tamamlan{\i}r
+\end{enumerate}
+
+
+% ============================================================
+\section{Rapor Sentezi: \c{C}ok Kaynak F\"{u}zyonu}
+\label{sec:report_synthesis}
+% ============================================================
+
+\subsection{Dempster--Shafer Kan{\i}t Teorisi}
+
+Dempster--Shafer (DS) teorisi, farkl{\i} kaynaklardan gelen ``kan{\i}t''lar{\i} birle\c{s}tirmek i\c{c}in kullan{\i}l{\i}r. Bayesian olas{\i}l{\i}\u{g}{\i}n bir genellemesidir: ``bilmiyorum'' durumunu modelleyebilir.
+
+$\Theta = \{h_1, h_2, \ldots, h_n\}$ bir karar \c{c}er\c{c}evesi olsun. Bir \emph{mass function} $m : 2^{\Theta} \to [0,1]$:
+
+\begin{equation}
+\label{eq:ds_mass}
+m(\emptyset) = 0, \qquad \sum_{A \subseteq \Theta} m(A) = 1
+\end{equation}
+
+\textbf{Belief} ve \textbf{Plausibility:}
+\begin{align}
+\text{Bel}(A) &= \sum_{B \subseteq A} m(B) \quad \text{(kesin do\u{g}ruluk alt s{\i}n{\i}r{\i})} \label{eq:belief} \\
+\text{Pl}(A)  &= \sum_{B \cap A \neq \emptyset} m(B) \quad \text{(m\"{u}mk\"{u}n do\u{g}ruluk \"{u}st s{\i}n{\i}r{\i})} \label{eq:plausibility}
+\end{align}
+
+Her zaman: $\text{Bel}(A) \leq P(A) \leq \text{Pl}(A)$.
+
+\textbf{Dempster Birle\c{s}tirme Kural{\i}:}
+\begin{formulbox}[Dempster Combination Rule]
+\begin{equation}
+\label{eq:dempster_rule}
+(m_1 \oplus m_2)(A) = \frac{1}{K} \sum_{\substack{B \cap C = A \\ B,C \subseteq \Theta}} m_1(B) \cdot m_2(C)
+\end{equation}
+burada normalle\c{s}tirme sabiti:
+\begin{equation}
+\label{eq:dempster_K}
+K = 1 - \underbrace{\sum_{B \cap C = \emptyset} m_1(B) \cdot m_2(C)}_{\text{\c{c}eli\c{s}ki miktar{\i}}}
+\end{equation}
+\end{formulbox}
+
+\begin{ornek}
+$\Theta = \{h_1: \text{``Python en pop\"{u}ler dil''},\ h_2: \text{``JavaScript en pop\"{u}ler dil''}\}$.
+
+Kaynak 1 (Stack Overflow anketi): $m_1(\{h_1\}) = 0.6$, $m_1(\{h_2\}) = 0.2$, $m_1(\Theta) = 0.2$.
+
+Kaynak 2 (GitHub istatistikleri): $m_2(\{h_1\}) = 0.3$, $m_2(\{h_2\}) = 0.5$, $m_2(\Theta) = 0.2$.
+
+\c{C}eli\c{s}ki hesab{\i}:
+\begin{align*}
+K_{\text{conflict}} &= m_1(\{h_1\}) \cdot m_2(\{h_2\}) + m_1(\{h_2\}) \cdot m_2(\{h_1\}) \\
+&= 0.6 \times 0.5 + 0.2 \times 0.3 = 0.36, \quad K = 1 - 0.36 = 0.64
+\end{align*}
+
+Birle\c{s}ik mass:
+\begin{align*}
+m_{\text{c}}(\{h_1\}) &= \frac{0.6 \times 0.3 + 0.6 \times 0.2 + 0.2 \times 0.3}{0.64} = \frac{0.36}{0.64} = 0.5625 \\
+m_{\text{c}}(\{h_2\}) &= \frac{0.2 \times 0.5 + 0.2 \times 0.2 + 0.2 \times 0.5}{0.64} = \frac{0.24}{0.64} = 0.375 \\
+m_{\text{c}}(\Theta)   &= \frac{0.2 \times 0.2}{0.64} = 0.0625
+\end{align*}
+
+Do\u{g}rulama: $0.5625 + 0.375 + 0.0625 = 1.0$ \checkmark. Sonu\c{c}: $h_1$ (Python) \%56 desteklenir, $h_2$ (JavaScript) \%38, belirsizlik \%6.
+\end{ornek}
+
+\begin{dikkat}
+Kodda DS teorisi do\u{g}rudan uygulanm{\i}yor. Bunun yerine LLM-as-a-judge yakla\c{s}{\i}m{\i} kullan{\i}l{\i}r: her kayna\u{g}a g\"{u}venilirlik skoru verilir, d\"{u}\c{s}\"{u}k skorlu kaynaklar filtrelenir (real\_deep\_research.py L785--788: $\text{score} \geq 30$), LLM'e ``bu kaynaklar{\i} birle\c{s}tir'' denir. Bu, DS'nin yakla\c{s}{\i}k bir uygulamasıd{\i}r.
+\end{dikkat}
+
+\subsection{\c{C}eli\c{s}kili Kaynak \c{C}\"{o}z\"{u}m\"{u}}
+
+\subsubsection{A\u{g}{\i}rl{\i}kl{\i} Ortalama}
+
+Say{\i}sal de\u{g}erler i\c{c}in:
+\begin{equation}
+\label{eq:weighted_avg}
+v_{\text{final}} = \frac{\sum_{i=1}^{S} w_i \cdot v_i}{\sum_{i=1}^{S} w_i}, \qquad w_i = \text{reliability\_score}_i
+\end{equation}
+
+\begin{ornek}
+``AI pazar b\"{u}y\"{u}kl\"{u}\u{g}\"{u}'' i\c{c}in 3 kaynak: Reuters ($w=85$, \$900B), Blog ($w=40$, \$1.5T), McKinsey ($w=75$, \$1.1T):
+\[
+v = \frac{85 \times 900 + 40 \times 1500 + 75 \times 1100}{85 + 40 + 75} = \frac{219000}{200} = 1095 \text{ milyar \$}
+\]
+A\u{g}{\i}rl{\i}ks{\i}z ortalama: $(900+1500+1100)/3 = 1167$. A\u{g}{\i}rl{\i}kl{\i} sonu\c{c} daha d\"{u}\c{s}\"{u}kt\"{u}r \c{c}\"{u}nk\"{u} d\"{u}\c{s}\"{u}k g\"{u}venilirlikli kayna\u{g}{\i}n etkisi azalt{\i}lm{\i}\c{s}t{\i}r.
+\end{ornek}
+
+\subsubsection{Majority Voting}
+
+Kalitatif ifadeler i\c{c}in:
+\begin{equation}
+\label{eq:majority_voting}
+\text{karar} = \arg\max_{h} \sum_{\substack{i:\\ \text{kaynak}_i \text{ } h \text{ der}}} w_i
+\end{equation}
+
+\begin{kodref}{real\_deep\_research.py L152--190}
+\texttt{detect\_conflicting\_information()} en fazla 5 kayna\u{g}{\i} birbiriyle kar\c{s}{\i}la\c{s}t{\i}r{\i}r ve LLM'e ``\c{c}eli\c{s}ki var m{\i}?'' diye sorar. Bu, ne weighted average ne de majority voting'dir --- LLM'e b{\i}rak{\i}lan serbest form de\u{g}erlendirmedir.
+\end{kodref}
+
+
+% ============================================================
+\section{Prompt Chaining ve Token B\"{u}t\c{c}e Y\"{o}netimi}
+\label{sec:prompt_chaining}
+% ============================================================
+
+\subsection{Prompt Zinciri Tasar{\i}m{\i}}
+
+LocoDex pipeline'{\i} birden fazla LLM \c{c}a\u{g}r{\i} zinciri kullan{\i}r. \.{I}ki ana zincir vard{\i}r:
+
+% --- TikZ: Prompt Chain Diyagrami ---
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=0.7cm,
+  prompt/.style={
+    rectangle, rounded corners=2pt,
+    draw=codePurple!70, fill=codeBG, text=textWhite,
+    minimum width=3cm, minimum height=0.65cm,
+    font=\scriptsize\bfseries, text centered
+  },
+  data/.style={
+    rectangle,
+    draw=codeGreen!50, fill=codeBG, text=codeGreen,
+    minimum width=2.5cm, minimum height=0.55cm,
+    font=\scriptsize, text centered
+  },
+  arrow/.style={->, >=stealth, color=sectionBlue, thick},
+  label/.style={font=\tiny\color{sectionBlue!60}, anchor=west}
+]
+
+% Sol kolon: RealDeepResearcher
+\node[font=\small\bfseries\color{chapterBlue}] (title1) {Zincir 1: RealDeepResearcher};
+
+\node[prompt, below=0.4cm of title1] (p1) {search\_strategy\_prompt};
+\node[data, below=of p1] (d1) {arama\_sorgular{\i}};
+\node[prompt, below=of d1] (p2) {reliability\_prompt};
+\node[data, below=of p2] (d2) {g\"{u}venilirlik\_skoru};
+\node[prompt, below=of d2] (p3) {analysis\_prompt};
+\node[data, below=of p3] (d3) {kaynak\_\"{o}zeti};
+\node[prompt, below=of d3] (p4) {conflict\_prompt};
+\node[data, below=of p4] (d4) {\c{c}eli\c{s}ki\_analizi};
+\node[prompt, below=of d4] (p5) {final\_prompt};
+\node[data, below=of p5] (d5) {RAPOR};
+
+\draw[arrow] (p1) -- (d1);
+\draw[arrow] (d1) -- (p2);
+\draw[arrow] (p2) -- (d2);
+\draw[arrow] (d2) -- (p3);
+\draw[arrow] (p3) -- (d3);
+\draw[arrow] (d3) -- (p4);
+\draw[arrow] (p4) -- (d4);
+\draw[arrow] (d4) -- (p5);
+\draw[arrow] (p5) -- (d5);
+
+% Notlar
+\node[label, right=0.2cm of p2] {$\times S$ kaynak};
+\node[label, right=0.2cm of p3] {$\times S$ kaynak};
+
+\end{tikzpicture}
+\caption{RealDeepResearcher prompt zinciri. Mor kutular LLM \c{c}a\u{g}r{\i}lar{\i}n{\i}, ye\c{s}il kutular veri \c{c}{\i}kt{\i}lar{\i}n{\i} temsil eder.}
+\label{fig:prompt_chain}
+\end{figure}
+
+\subsection{Zincir Hata Analizi}
+
+Zincir uzunlu\u{g}u $L$ ve her ad{\i}mda hata olas{\i}l{\i}\u{g}{\i} $e$ ise:
+
+\begin{equation}
+\label{eq:chain_error}
+P_{\text{chain,correct}} = (1 - e)^{L}
+\end{equation}
+
+\begin{ornek}
+$e = 0.05$ i\c{c}in:
+\begin{itemize}
+  \item RealDeepResearcher ($S=20$): $L_{\text{eff}} = 6 + 3 \times 20 = 66 \Rightarrow P = 0.95^{66} = 0.033$ (\%3.3 hatas{\i}z!)
+  \item DeepResearcher ($K=4$ iterasyon): $L_{\text{eff}} = 15 \Rightarrow P = 0.95^{15} = 0.463$ (\%46 hatas{\i}z)
+\end{itemize}
+\end{ornek}
+
+Bu, prompt chaining'in en b\"{u}y\"{u}k s{\i}n{\i}rlamas{\i}d{\i}r: zincir uzad{\i}k\c{c}a hatas{\i}z \c{c}{\i}kt{\i} olas{\i}l{\i}\u{g}{\i} \"{u}stel olarak d\"{u}\c{s}er.
+
+\subsection{Token Budget De\u{g}erleri}
+
+\begin{table}[H]
+\centering
+\caption{Projedeki t\"{u}m max\_tokens de\u{g}erleri}
+\label{tab:token_budget}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXcl}
+\toprule
+\color{chapterBlue}\textbf{Kullan{\i}m Yeri} & \color{chapterBlue}\textbf{Ama\c{c}} & \color{chapterBlue}\textbf{max\_tokens} & \color{chapterBlue}\textbf{Dosya:Sat{\i}r} \\
+\midrule
+G\"{u}venilirlik       & K{\i}sa skor + sebep          & 200   & real\_deep:L119 \\
+\c{C}eli\c{s}ki tespiti   & Kaynak kar\c{s}{\i}la\c{s}t{\i}rma    & 500   & real\_deep:L184 \\
+Veri \c{c}{\i}karma       & Say{\i}sal veri listesi       & 300   & real\_deep:L224 \\
+Kaynak analizi     & \"{O}zet                     & 500   & real\_deep:L757 \\
+Fallback rapor     & Model bilgisiyle rapor     & 2000  & real\_deep:L832 \\
+Final rapor        & Tam rapor                  & 4000  & real\_deep:L889 \\
+Gap analizi        & Eksik alan tespiti         & 500   & smart\_ml:L506  \\
+Final rapor (ml)   & Tam rapor                  & 5000  & smart\_ml:L685  \\
+LLM default        & Genel \c{c}a\u{g}r{\i}              & 3000  & real\_deep:L232 \\
+Together AI        & Final rapor                & 4096  & together:L37   \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Maliyet Analizi}
+
+\begin{equation}
+\label{eq:cost}
+\text{Maliyet} = (\text{input\_tokens} + \text{output\_tokens}) \times \text{fiyat/token}
+\end{equation}
+
+\begin{ornek}
+Llama 3.1 70B (Together AI): input/output \$0.88/1M token.
+
+20 kaynak i\c{c}in: input $\sim$50\,000 token ($\times \$0.88/\text{M} = \$0.044$), output $\sim$27\,000 token ($\$0.024$). Toplam: $\sim\$0.07$/ara\c{s}t{\i}rma. Lokal model kullan{\i}ld{\i}\u{g}{\i}nda maliyet s{\i}f{\i}rd{\i}r.
+\end{ornek}
+
+\subsection{Context Window ve Input Boyutu}
+
+\begin{equation}
+\label{eq:context_check}
+\text{input\_tokens} + \text{max\_tokens\_output} \leq \text{context\_window}
+\end{equation}
+
+Final prompt'un input boyutu:
+\begin{align}
+\text{Input} &= S \times \bar{L}_{\text{analysis}} + L_{\text{conflict}} + S \times \bar{L}_{\text{source}} + L_{\text{template}} \notag \\
+&= 20 \times 500 + 500 + 20 \times 50 + 500 \approx 12\,000 \text{ token} \label{eq:input_size} \\
+\text{Total} &= 12\,000 + 4\,000 = 16\,000 \text{ token} \quad (\text{Llama 3.1 128K limitinin \%12.5'i}) \notag
+\end{align}
+
+
+% ============================================================
+\section{Alternatif Pipeline Tasar{\i}mlar{\i}}
+\label{sec:alternatives}
+% ============================================================
+
+\begin{table}[H]
+\centering
+\caption{Breadth-First vs Depth-First ara\c{s}t{\i}rma kar\c{s}{\i}la\c{s}t{\i}rmas{\i}}
+\label{tab:bfs_vs_dfs}
+\rowcolors{2}{boxBG}{pageBG}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\color{chapterBlue}\textbf{Kriter} & \color{chapterBlue}\textbf{Breadth-First (LocoDex)} & \color{chapterBlue}\textbf{Depth-First} \\
+\midrule
+\.{I}lk sonu\c{c} g\"{o}rme    & Yava\c{s} (t\"{u}m a\c{s}amalar bitmeli)   & H{\i}zl{\i} (ilk sorgu biter bitmez) \\
+Bilgi kalitesi       & Y\"{u}ksek (t\"{u}m kaynaklar kar\c{s}{\i}la\c{s}t{\i}r{\i}l{\i}r) & D\"{u}\c{s}\"{u}k (erken sorgular{\i}n etkisi fazla) \\
+\c{C}eli\c{s}ki tespiti   & Kolay (t\"{u}m kaynaklar mevcut)       & Zor (art{\i}msal kar\c{s}{\i}la\c{s}t{\i}rma) \\
+Bellek kullan{\i}m{\i}    & $\mathcal{O}(S \cdot C)$               & $\mathcal{O}(C)$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Map-Reduce alternatifi:} Her sorgu ba\u{g}{\i}ms{\i}z mini-rapor \"{u}retir (Map), sonra birle\c{s}tirilir (Reduce). Avantaj: Map a\c{s}amas{\i} tamamen paralel, $P \to 1$, $S \to N$. Dezavantaj: Reduce a\c{s}amas{\i}nda bilgi kayb{\i}.
+
+\textbf{Reinforcement Learning alternatifi:} Ara\c{s}t{\i}rma s\"{u}recini MDP olarak modelleme --- State: mevcut bilgi k\"{u}mesi; Action: sorgu se\c{c}, kaynak se\c{c}, rapor yaz, dur; Reward: coverage art{\i}\c{s}{\i} $-$ maliyet. Bu, LocoDex'in mevcut heuristic yakla\c{s}{\i}m{\i}na g\"{o}re optimal stopping criterion ve sorgu se\c{c}imi sa\u{g}layabilir.
+
+
+% ============================================================
+\section{S{\i}n{\i}rlamalar}
+\label{sec:pipeline_limitations}
+% ============================================================
+
+\begin{enumerate}
+  \item \textbf{LLM darbo\u{g}az{\i}:} Pipeline'{\i}n \%70+ s\"{u}resi LLM inference'd{\i}r. LLM h{\i}z{\i}, pipeline h{\i}z{\i}n{\i} do\u{g}rudan belirler.
+  \item \textbf{Seri final rapor:} Tek b\"{u}y\"{u}k LLM \c{c}a\u{g}r{\i}s{\i}, paralelle\c{s}tirilemiyor. Amdahl'{\i}n sert s{\i}n{\i}r{\i}.
+  \item \textbf{Deterministik olmayan \c{c}{\i}kt{\i}:} Ayn{\i} sorgu i\c{c}in farkl{\i} sonu\c{c}lar gelebilir (temperature $> 0$). Tekrarlanabilirlik sorunu.
+  \item \textbf{Maliyet \"{o}l\c{c}eklenmesi:} $S$ kaynak, $Q$ sorgu i\c{c}in LLM \c{c}a\u{g}r{\i} say{\i}s{\i} $\mathcal{O}(S \cdot Q)$.
+  \item \textbf{Rate limiting:} API throttling nedeniyle ger\c{c}ek paralellik s{\i}n{\i}rl{\i}d{\i}r.
+  \item \textbf{Bilgi g\"{u}ncelli\u{g}i:} LLM training data cutoff sonras{\i} bilgiler i\c{c}in sadece web'e ba\u{g}{\i}ml{\i}d{\i}r.
+\end{enumerate}
+
+
+% ============================================================
+\begin{ozet}
+\begin{itemize}[leftmargin=1.5em]
+  \item LocoDex pipeline'{\i} 8 a\c{s}amadan olu\c{s}ur; toplam seri s\"{u}re $\sim$717\,s (12\,dk), $\sim$67 LLM \c{c}a\u{g}r{\i}s{\i}.
+  \item Bilgi kapsama oran{\i} $\text{Coverage}(i) = 1 - (1-\alpha)^i$ geometrik seri modeli izler; $\alpha = 0.4$ ve 6 iterasyonla \%95+ kapsama.
+  \item Amdahl yasas{\i}yla $P = 0.651$, maks.\ h{\i}zlanma $2.87\times$; darbo\u{g}az final rapor \"{u}retimidir.
+  \item Hata yay{\i}l{\i}m{\i} ba\u{g}{\i}ms{\i}z modelde \%54 ama Markov modelde (LLM d\"{u}zeltme kapasitesi) daha d\"{u}\c{s}\"{u}k.
+  \item Dempster--Shafer f\"{u}zyonu teorik temeli sa\u{g}lar; kodda LLM-as-a-judge yakla\c{s}{\i}k uygulamad{\i}r.
+  \item Prompt zinciri uzad{\i}k\c{c}a hatas{\i}z \c{c}{\i}kt{\i} olas{\i}l{\i}\u{g}{\i} $(1-e)^L$ \"{u}stel d\"{u}\c{s}er; batch processing ile L azalt{\i}labilir.
+  \item Token b\"{u}t\c{c}esi 200--5000 aras{\i}nda de\u{g}i\c{s}ir; 20 kaynak i\c{c}in toplam $\sim$\$0.07 (Together AI) veya \$0 (lokal).
+\end{itemize}
+\end{ozet}
