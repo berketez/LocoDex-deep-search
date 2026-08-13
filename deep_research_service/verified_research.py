@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -369,6 +370,14 @@ class VerifiedDeepResearcher:
         self.seen_urls = set()
         self.all_queries = []
         self.language = "tr"
+        # Aşama → toplam saniye. Hız çalışması ölçüme dayansın diye her koşuda
+        # gerçek monotonic süre tutulur; CLI özeti ve eval koşucusu okur.
+        self.timings = {}
+
+    def _sure_kaydet(self, asama, t0):
+        """Aşamanın geçen süresini toplar; aynı aşama turlar arası birikir."""
+        self.timings[asama] = self.timings.get(asama, 0.0) + (time.monotonic() - t0)
+        return time.monotonic()
 
     # ------------------------------------------------------------------
     # Yardımcılar
@@ -1363,7 +1372,9 @@ information beyond the findings above."""
 
         # 1. Soru analizi
         await self._progress(0.05, "Soru analiz ediliyor (konu türü, zaman duyarlılığı, alt sorular)...")
+        t = time.monotonic()
         analysis = await self.analyze_topic(topic)
+        t = self._sure_kaydet("analiz", t)
         sens_tr = {"critical": "kritik (güncellik şart)", "moderate": "orta", "low": "düşük"}
         await self._message(
             f"Konu türü: {analysis['konu_turu']} | Zaman duyarlılığı: "
@@ -1381,15 +1392,18 @@ information beyond the findings above."""
 
             # 2. Sorgular
             await self._progress(base, f"Tur {round_no}: arama stratejisi hazırlanıyor...")
+            t = time.monotonic()
             queries = await self.generate_queries(
                 topic, analysis, round_no=round_no, gap_queries=gap_queries
             )
+            t = self._sure_kaydet("sorgu üretimi", t)
             if not queries:
                 break
 
             # 3. Arama
             await self._progress(base + 0.04, f"Tur {round_no}: web araması ({len(queries)} sorgu)...")
             results = await self.search_round(queries, analysis["zaman_duyarliligi"])
+            t = self._sure_kaydet("arama", t)
             await self._message(f"{len(results)} yeni aday kaynak bulundu")
 
             # 4. İçerik + tarih
@@ -1397,6 +1411,7 @@ information beyond the findings above."""
             fetched, skipped = await self.fetch_contents(
                 results, analysis["zaman_duyarliligi"]
             )
+            t = self._sure_kaydet("sayfa okuma", t)
             dated = sum(1 for s in fetched if s["published_at"])
             await self._message(
                 f"{len(fetched)} sayfa okundu, {dated} tanesinin yayın tarihi doğrulandı"
@@ -1416,6 +1431,7 @@ information beyond the findings above."""
 
             # 5. Kaynak analizi + iddia çıkarımı
             await self._progress(base + 0.16, "Kaynaklar analiz ediliyor, iddialar çıkarılıyor...")
+            t = time.monotonic()
             consecutive_llm_failures = 0
             for i, source in enumerate(fetched):
                 date_info = (
@@ -1449,6 +1465,8 @@ information beyond the findings above."""
                 else:
                     await self._message("      İlgisiz ya da kullanılamaz içerik")
 
+            t = self._sure_kaydet("kaynak analizi", t)
+
             # 6. Çapraz doğrulama — konsolidasyon başarısız olursa önceki
             # turun bulguları korunur (koşulsuz ezme, geçici LLM arızasında
             # tüm sonucu yok ediyordu)
@@ -1458,6 +1476,7 @@ information beyond the findings above."""
             except LLMError as e:
                 logger.error(f"Konsolidasyon LLM hatası: {e}")
                 new_findings = []
+            t = self._sure_kaydet("konsolidasyon", t)
             if new_findings:
                 findings = new_findings
             elif findings:
@@ -1472,7 +1491,9 @@ information beyond the findings above."""
             # 7. Boşluk analizi → devam mı?
             if round_no >= RESEARCH_MAX_ROUNDS:
                 break
+            t = time.monotonic()
             gap_queries = await self.find_gaps(topic, analysis, findings)
+            t = self._sure_kaydet("boşluk analizi", t)
             if gap_queries is None:
                 await self._message(
                     "Boşluk analizi yapılamadı, mevcut kaynaklarla rapora geçiliyor"
@@ -1492,7 +1513,9 @@ information beyond the findings above."""
         # 8. Rapor
         await self._progress(0.9, "Doğrulanmış rapor yazılıyor...")
         duration = (datetime.now() - start).total_seconds()
+        t = time.monotonic()
         report = await self.generate_report(topic, analysis, findings, duration)
+        self._sure_kaydet("rapor", t)
 
         saved = self.save_report(topic, report)
         if saved:

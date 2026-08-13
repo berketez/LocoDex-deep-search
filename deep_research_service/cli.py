@@ -647,6 +647,13 @@ def print_summary(researcher, elapsed, report_path, style):
         ("Güven", f"%{overall}" if findings else "—"),
         ("Sorgu", str(len(queries))),
     ]
+    timings = getattr(researcher, "timings", None) or {}
+    dokum = " · ".join(
+        f"{asama} {_fmt_duration(saniye)}" for asama, saniye in timings.items()
+        if saniye >= 0.5
+    )
+    if dokum:
+        rows.append(("Döküm", dokum))
     if report_path:
         rows.append(("Rapor", report_path))
     for label, value in rows:
