@@ -1,0 +1,125 @@
+{
+  "aciklama": "LocoDex Deep Search değerlendirme soru seti. 'beklenti' alanı yargıca verilen değerlendirme ölçütüdür; sabit cevap değil, raporun taşıması gereken nitelikleri tanımlar (güncel sorularda doğru cevap zamanla değişir).",
+  "sorular": [
+    {
+      "no": 1,
+      "tur": "guncel-olgu",
+      "soru": "Türkiye'de 2026 yılı için geçerli net asgari ücret ne kadar?",
+      "beklenti": "Tek ve net bir TL rakamı vermeli; rakam resmî/güvenilir kaynağa dayanmalı; yıl ortası zam olduysa dönem ayrımı yapmalı."
+    },
+    {
+      "no": 2,
+      "tur": "guncel-olgu",
+      "soru": "OpenAI'ın şu an kullanılabilir en güncel modeli hangisi ve ne zaman yayınlandı?",
+      "beklenti": "Model adı + yayın tarihi net olmalı; eski modeli güncel diye sunmamalı; kaynakların yayın tarihleri raporda görünmeli."
+    },
+    {
+      "no": 3,
+      "tur": "guncel-olgu",
+      "soru": "Türkiye Cumhuriyet Merkez Bankası'nın güncel politika faizi yüzde kaç?",
+      "beklenti": "Tek rakam + karar tarihi; kaynak TCMB ya da güvenilir finans basını olmalı; eski faiz oranını güncel gibi vermemeli."
+    },
+    {
+      "no": 4,
+      "tur": "guncel-olgu",
+      "soru": "Apple'ın en son tanıttığı iPhone modeli hangisi ve temel yenilikleri neler?",
+      "beklenti": "Doğru model adı; 2-3 somut yenilik; tanıtım tarihi; söylenti ile resmî bilgiyi karıştırmamalı."
+    },
+    {
+      "no": 5,
+      "tur": "guncel-olgu",
+      "soru": "Python programlama dilinin en güncel kararlı sürümü hangisi?",
+      "beklenti": "Doğru sürüm numarası; python.org kaynaklı olmalı; alpha/beta sürümü kararlı diye sunmamalı."
+    },
+    {
+      "no": 6,
+      "tur": "guncel-olgu",
+      "soru": "İstanbul'un nüfusu en son resmî veriye göre kaç?",
+      "beklenti": "TÜİK kaynaklı rakam + veri yılı; tahmin ile resmî sayımı ayırmalı."
+    },
+    {
+      "no": 7,
+      "tur": "guncel-olgu",
+      "soru": "Avrupa Birliği Yapay Zeka Yasası (AI Act) hangi tarihte yürürlüğe girdi ve hangi yükümlülükler şu an aktif?",
+      "beklenti": "Yürürlük tarihi + kademeli uygulama takvimi ayrımı; birincil kaynak (eur-lex / resmî AB sayfası) kullanılmalı."
+    },
+    {
+      "no": 8,
+      "tur": "guncel-olgu",
+      "soru": "Türkiye'de elektrikli araç satışları son bir yılda nasıl değişti?",
+      "beklenti": "Sayısal veri (adet/pay) + dönem + kaynak; tek kaynağa dayanıyorsa düşük güven etiketi olmalı."
+    },
+    {
+      "no": 9,
+      "tur": "karsilastirma",
+      "soru": "Ollama ile LM Studio arasındaki temel farklar neler? Hangisi hangi durumda tercih edilmeli?",
+      "beklenti": "En az 3 somut eksende karşılaştırma (arayüz, API, model formatı, platform); pazarlama dili değil olgusal fark."
+    },
+    {
+      "no": 10,
+      "tur": "karsilastirma",
+      "soru": "Elektrikli araç bataryalarında LFP ve NMC kimyalarının avantaj ve dezavantajları neler?",
+      "beklenti": "Enerji yoğunluğu, ömür, maliyet, güvenlik eksenleri; sayısal değer verirken kaynak göstermeli."
+    },
+    {
+      "no": 11,
+      "tur": "karsilastirma",
+      "soru": "PostgreSQL ve MySQL hangi kullanım senaryolarında birbirine üstün?",
+      "beklenti": "Somut senaryo → gerekçe eşleşmesi; 'ikisi de iyidir' kaçamağı yerine ayrım; güncel sürüm özellikleri."
+    },
+    {
+      "no": 12,
+      "tur": "karsilastirma",
+      "soru": "Apple M4 ile M3 çipi arasındaki performans ve mimari farklar neler?",
+      "beklenti": "Somut spec farkları (çekirdek, bellek bant genişliği, üretim süreci); benchmark verisi varsa kaynağıyla."
+    },
+    {
+      "no": 13,
+      "tur": "mevzuat",
+      "soru": "Acı biber içeren bir gıda ürününün Almanya'ya ihracatında etikette acı biberin Almanca karşılığı ne olmalı? İlgili AB mevzuatına göre değerlendir.",
+      "beklenti": "LMIV/AB etiketleme mevzuatı bağlamı; 'Pfefferschoten' (tebliğ/tarife kaynaklı) ile günlük dil 'scharfer Pfeffer/Chili' ayrımına kanıt; birincil mevzuat kaynağı (eur-lex, gesetze-im-internet) kullanılmalı."
+    },
+    {
+      "no": 14,
+      "tur": "mevzuat",
+      "soru": "KVKK'ya göre açık rızanın geçerlilik şartları nelerdir?",
+      "beklenti": "Kanun maddesine (m.3, m.5) dayanmalı; mevzuat.gov.tr ya da KVKK kurumu birincil kaynak; blog özeti tek kaynak olmamalı."
+    },
+    {
+      "no": 15,
+      "tur": "mevzuat",
+      "soru": "AB'de gıda etiketlerinde alerjen bildirimi hangi tüzükle zorunludur ve hangi alerjenler listelenmelidir?",
+      "beklenti": "1169/2011 (LMIV) tüzüğü + Ek II 14 alerjen; birincil kaynak eur-lex olmalı."
+    },
+    {
+      "no": 16,
+      "tur": "temel-bilgi",
+      "soru": "Navier-Stokes denklemleri neyi tanımlar ve neden çözümü zordur?",
+      "beklenti": "Doğru fiziksel tanım (momentum korunumu, viskoz akış); doğrusalsızlık/türbülans zorluğu; milenyum problemi bağlamı doğru."
+    },
+    {
+      "no": 17,
+      "tur": "temel-bilgi",
+      "soru": "Fotosentezin ışığa bağımlı ve ışıktan bağımsız evreleri nasıl çalışır?",
+      "beklenti": "İki evrenin doğru ayrımı (tilakoit/stroma, ATP-NADPH/Calvin döngüsü); zaman duyarlılığı düşük sınıflanmalı, eski kaynak cezalandırılmamalı."
+    },
+    {
+      "no": 18,
+      "tur": "temel-bilgi",
+      "soru": "Bernoulli ilkesi nedir ve uçak kanadındaki kaldırma kuvvetini tek başına açıklar mı?",
+      "beklenti": "Doğru tanım + yaygın yanlış anlamaya (eşit geçiş süresi safsatası) değinmeli; ideal rapor Newton/sirkülasyon açıklamasını da anmalı."
+    },
+    {
+      "no": 19,
+      "tur": "tuzak",
+      "soru": "Mars'a ilk insanlı iniş ne zaman yapıldı ve hangi ülke gerçekleştirdi?",
+      "beklenti": "DÜRÜSTLÜK TESTİ: Henüz insanlı Mars inişi yapılmadı; rapor bunu açıkça söylemeli, uydurma tarih/ülke vermemeli; planlanan görevleri 'plan' olarak ayırmalı."
+    },
+    {
+      "no": 20,
+      "tur": "tuzak",
+      "soru": "What are the latest developments in room-temperature superconductors?",
+      "beklenti": "SPEKÜLASYON AYIKLAMA TESTİ: LK-99 tarzı çürütülmüş iddiaları 'doğrulanmadı/çürütüldü' olarak etiketlemeli; hakemli kaynak ile ön-baskı/medya abartısını ayırmalı; İngilizce soruya İngilizce rapor."
+    }
+  ]
+}
