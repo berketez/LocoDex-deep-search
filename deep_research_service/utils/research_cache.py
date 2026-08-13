@@ -2,17 +2,21 @@
 SQLite-based cache for research results.
 
 Stores completed research results keyed by a SHA-256 hash of the topic
-string.  Entries expire after a configurable TTL (default 24 hours).
+string plus an optional *variant* (engine/model identifier).  Without the
+variant, a run with a different model or engine would silently return the
+previous model's answer.  Entries expire after a configurable TTL
+(default 24 hours).
 
 Usage:
     from utils.research_cache import research_cache
 
-    cached = research_cache.get("quantum computing")
+    variant = "verified|gemma4:31b"
+    cached = research_cache.get("quantum computing", variant)
     if cached:
         return cached
 
     result = await do_expensive_research(...)
-    research_cache.set("quantum computing", result)
+    research_cache.set("quantum computing", result, variant)
 """
 
 import hashlib
@@ -74,16 +78,17 @@ class ResearchCache:
             logger.error("Failed to initialise research cache: %s", e)
 
     @staticmethod
-    def _hash_topic(topic: str) -> str:
-        return hashlib.sha256(topic.strip().lower().encode("utf-8")).hexdigest()
+    def _hash_topic(topic: str, variant: str = "") -> str:
+        key = f"{variant.strip().lower()}\n{topic.strip().lower()}"
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get(self, topic: str) -> dict | None:
+    def get(self, topic: str, variant: str = "") -> dict | None:
         """Return the cached result dict for *topic*, or ``None`` if missing / expired."""
-        topic_hash = self._hash_topic(topic)
+        topic_hash = self._hash_topic(topic, variant)
         try:
             conn = self._connect()
             row = conn.execute(
@@ -99,7 +104,7 @@ class ResearchCache:
             age = time.time() - created_at
             if age > self.ttl:
                 logger.debug("Cache entry for '%s' expired (%.0fs old)", topic, age)
-                self.delete(topic)
+                self.delete(topic, variant)
                 return None
 
             logger.info("Cache HIT for '%s' (%.0fs old)", topic, age)
@@ -109,9 +114,9 @@ class ResearchCache:
             logger.error("Cache get error: %s", e)
             return None
 
-    def set(self, topic: str, result: dict) -> None:
+    def set(self, topic: str, result: dict, variant: str = "") -> None:
         """Store *result* (a JSON-serialisable dict) under *topic*."""
-        topic_hash = self._hash_topic(topic)
+        topic_hash = self._hash_topic(topic, variant)
         try:
             conn = self._connect()
             conn.execute(
@@ -127,9 +132,9 @@ class ResearchCache:
         except Exception as e:
             logger.error("Cache set error: %s", e)
 
-    def delete(self, topic: str) -> None:
+    def delete(self, topic: str, variant: str = "") -> None:
         """Remove a single cached entry."""
-        topic_hash = self._hash_topic(topic)
+        topic_hash = self._hash_topic(topic, variant)
         try:
             conn = self._connect()
             conn.execute("DELETE FROM cache WHERE topic_hash = ?", (topic_hash,))

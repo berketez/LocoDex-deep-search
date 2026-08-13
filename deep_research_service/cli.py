@@ -391,9 +391,41 @@ def cmd_config(args):
 
 
 def cmd_serve(args):
-    import uvicorn
+    style = _make_style(args.color)
     os.environ.setdefault("RESEARCH_ENGINE", args.engine)
-    from server import app
+    # fastapi ile starlette sürümleri birbirinden bağımsız güncellenmiş bir
+    # ortamda (ör. sisteme elle starlette yüklenmesi) import TypeError ile
+    # patlar ve kullanıcı ham traceback görür. Burada teşhis konur ve tam
+    # çözüm komutu gösterilir.
+    try:
+        import uvicorn
+        from server import app
+    except (ImportError, TypeError) as e:
+        from importlib import metadata
+
+        def _surum(paket):
+            try:
+                return metadata.version(paket)
+            except metadata.PackageNotFoundError:
+                return "yok"
+
+        print(
+            f"{style.red}Web sunucusu başlatılamadı:{style.reset} {e}\n\n"
+            f"Kurulu sürümler: fastapi {_surum('fastapi')} · "
+            f"starlette {_surum('starlette')} · uvicorn {_surum('uvicorn')}\n"
+            f"Muhtemel neden: fastapi ile starlette sürümleri uyumsuz "
+            f"(paketlerden biri tek başına güncellenmiş).\n\n"
+            f"Çözüm — uyumlu çifti birlikte kur:\n"
+            f"  {style.bold}python3 -m pip install --upgrade "
+            f"\"fastapi>=0.110.2\" \"uvicorn[standard]>=0.29.0\"{style.reset}\n"
+            f"ya da tüm bağımlılıkları tazele:\n"
+            f"  {style.bold}python3 -m pip install --upgrade -r "
+            f"deep_research_service/requirements.txt{style.reset}\n\n"
+            f"{style.dim}Not: terminal arayüzü (locodex deepsearch) bu "
+            f"paketlere ihtiyaç duymaz, çalışmaya devam eder.{style.reset}",
+            file=sys.stderr,
+        )
+        return 2
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
@@ -406,6 +438,18 @@ def _apply_tuning(args, style):
     modül niteliğini değiştirmek çalışma zamanında etkili olur.
     """
     import verified_research as vr
+
+    # Smart motorun sorgu/kaynak sayıları kod içinde sabittir; bu bayraklar
+    # yalnızca verified motoru etkiler. Sessizce yok saymak kullanıcıyı
+    # "ayar yaptım" sanrısında bırakıyordu.
+    if args.engine == "smart":
+        if any(v is not None for v in (args.sources, args.rounds, args.queries)):
+            print(
+                f"{style.yellow}Uyarı:{style.reset} smart motor "
+                f"--sources/--rounds/--queries ayarlarını desteklemiyor; yok sayıldı.",
+                file=sys.stderr,
+            )
+        return
 
     applied = []
     if args.sources is not None:
@@ -480,17 +524,23 @@ def _prepare_engine(args, style):
     return Engine, cache
 
 
-def _execute_research(topic, model_id, model_source, args, style):
+def _execute_research(topic, model_id, model_source, args, style, force_fresh=False):
     """
     Araştırmayı koşturur. Başarılıysa ResearchOutcome, hatalıysa çıkış kodu döner.
+
+    force_fresh: önbellekte kayıt olsa bile araştırmayı baştan koşturur
+    (/yeni komutu). Sonuç yine önbelleğe yazılır, eski kayıt tazelenir.
     """
     from llm_client import LLMError
 
     Engine, cache = _prepare_engine(args, style)
     engine = args.engine
+    # Aynı konu farklı model ya da motorla sorulduğunda öncekinin cevabı
+    # dönmesin diye önbellek anahtarına motor + model eklenir.
+    cache_variant = f"{engine}|{model_id}"
 
-    if cache is not None:
-        cached = cache.get(topic)
+    if cache is not None and not force_fresh:
+        cached = cache.get(topic, cache_variant)
         if cached and cached.get("answer"):
             print(
                 f"{style.yellow}Önbellekten geldi{style.reset} "
@@ -551,11 +601,15 @@ def _execute_research(topic, model_id, model_source, args, style):
     finally:
         progress.finish()
 
-    if cache is not None:
+    # Kaynaksız biten koşu (ağ kesintisi, arama motoru boş döndü) önbelleğe
+    # yazılmaz: boş raporu 24 saat sunmak, düzelen ağda bile yeniden denemeyi
+    # engelliyordu.
+    fetched_sources = getattr(researcher, "sources", None)
+    if cache is not None and fetched_sources != []:
         # Önbelleğe yazamamak (disk dolu, izin sorunu) tamamlanmış bir
         # araştırmayı geçersiz kılmaz; rapor yine döndürülür.
         try:
-            cache.set(topic, {"answer": report, "status": "success"})
+            cache.set(topic, {"answer": report, "status": "success"}, cache_variant)
         except (OSError, sqlite3.Error) as e:
             logger.warning(f"Sonuç önbelleğe yazılamadı: {e}")
 
@@ -690,6 +744,17 @@ def run_wizard(args, style):
     if model is None:
         print(f"{style.dim}İptal edildi.{style.reset}", file=sys.stderr)
         return 130
+
+    # Kapsam komut satırında zaten belirlenmişse (--fast ya da üç bayrağın
+    # da verilmesi) derinlik sorusu sorulmaz: menüden yapılan seçim bu
+    # durumda sessizce yok sayılıyordu.
+    if all(v is not None for v in (args.rounds, args.sources, args.queries)):
+        print(
+            f"{style.dim}Kapsam komut satırından alındı: {args.rounds} tur · "
+            f"{args.sources} kaynak · {args.queries} sorgu{style.reset}\n",
+            file=sys.stderr,
+        )
+        return _conversation_loop(model, args, style)
 
     # Sığdan derine sıralı; varsayılan olarak ortadaki (Dengeli) seçili gelir.
     depth_options = [
@@ -871,7 +936,10 @@ def _conversation_loop(model, args, style):
                 file=sys.stderr,
             )
 
-        outcome = _execute_research(istek, model["id"], model["source"], args, style)
+        outcome = _execute_research(
+            istek, model["id"], model["source"], args, style,
+            force_fresh=zorla_yeni,
+        )
         if isinstance(outcome, int):
             if outcome == 130:
                 continue

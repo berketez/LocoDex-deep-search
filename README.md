@@ -55,8 +55,8 @@ The numbers below are an *internal subjective evaluation* on a small set of pers
 ## What's New in v1.1
 
 - **Per-Domain Rate Limiter** — Async rate limiting prevents hammering the same domain. Default: max 1 request per 2 seconds per host. No more getting blocked by aggressive crawling.
-- **Research Cache (SQLite)** — Results are cached locally for 24 hours. Repeat queries return instantly without burning compute or network time. Zero new dependencies (uses stdlib `sqlite3`).
-- **Export API (Markdown & HTML)** — New REST endpoint `GET /export/{format}?topic=...` lets you export any cached research result as clean Markdown or a self-contained HTML page.
+- **Research Cache (SQLite)** — Results are cached locally for 24 hours, keyed by engine + model + topic, so switching models never returns another model's answer. Runs that end with zero usable sources are not cached. Repeat queries return instantly without burning compute or network time. Zero new dependencies (uses stdlib `sqlite3`).
+- **Export API (Markdown & HTML)** — REST endpoint `GET /export/{format}?topic=...&model=...` lets you export any cached research result as clean Markdown or a self-contained HTML page. Cache entries are keyed by engine + model + topic, so `model` must match the run.
 
 ## Why Choose LocoDex Deep Search?
 
@@ -315,10 +315,10 @@ curl -X POST http://localhost:8001/research \
 
 ```bash
 # Export as Markdown
-curl "http://localhost:8001/export/markdown?topic=Climate%20Change%20Solutions"
+curl "http://localhost:8001/export/markdown?topic=Climate%20Change%20Solutions&model=gemma4:31b"
 
 # Export as HTML
-curl "http://localhost:8001/export/html?topic=Climate%20Change%20Solutions" -o report.html
+curl "http://localhost:8001/export/html?topic=Climate%20Change%20Solutions&model=gemma4:31b" -o report.html
 
 # View cache statistics
 curl http://localhost:8001/cache/stats
