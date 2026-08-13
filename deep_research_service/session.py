@@ -92,11 +92,12 @@ class ResearchEntry:
     def context_block(self):
         """Takip sorusunda modele verilecek kanıt bloğu."""
         lines = ["BULGULAR (güven skorları hesaplanmıştır, değiştirme):"]
-        for i, f in enumerate(
-            sorted(self.findings, key=lambda x: -x["confidence"])[:CONTEXT_MAX_FINDINGS],
-            start=1,
-        ):
-            refs = ", ".join(f"[{s}]" for s in f.get("supporting", []))
+        shown = sorted(self.findings, key=lambda x: -x["confidence"])[:CONTEXT_MAX_FINDINGS]
+        referenced_ids = set()
+        for i, f in enumerate(shown, start=1):
+            supporting = f.get("supporting", [])
+            referenced_ids.update(supporting)
+            refs = ", ".join(f"[{s}]" for s in supporting)
             newest = (
                 f["newest_date"].strftime("%Y-%m-%d")
                 if f.get("newest_date") else "tarih yok"
@@ -109,7 +110,13 @@ class ResearchEntry:
 
         lines.append("")
         lines.append("KAYNAKLAR:")
-        for i, s in enumerate(self.sources[:CONTEXT_MAX_SOURCES], start=1):
+        # Kaynak numaraları bulgu referanslarıyla aynı (konumsal) numaradır.
+        # Liste kısaltılırken limitin üstünde kalan ama bir bulgunun referans
+        # verdiği kaynaklar da eklenir; yoksa model [21] gibi listede olmayan
+        # bir numaraya dayanmak zorunda kalıyordu.
+        for i, s in enumerate(self.sources, start=1):
+            if i > CONTEXT_MAX_SOURCES and i not in referenced_ids:
+                continue
             tarih = (
                 s["published_at"].strftime("%Y-%m-%d")
                 if s.get("published_at") else "?"

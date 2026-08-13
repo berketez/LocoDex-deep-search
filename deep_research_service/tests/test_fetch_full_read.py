@@ -43,9 +43,12 @@ class SahteYanit:
     status = 200
     charset = "utf-8"
 
-    def __init__(self, veri):
+    def __init__(self, veri, url="https://example.com/a"):
         self.content = SahteAkis(veri)
         self.headers = {"Content-Type": "text/html; charset=utf-8"}
+        # Gerçek aiohttp yanıtında yönlendirme sonrası nihai adres; motor
+        # bunu özel ağ kontrolü için okur.
+        self.url = url
 
     async def __aenter__(self):
         return self

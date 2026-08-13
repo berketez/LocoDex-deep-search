@@ -24,8 +24,21 @@ class PlatformPaths:
     
     @staticmethod
     def is_docker() -> bool:
-        """Check if running inside Docker container"""
-        return os.path.exists('/.dockerenv') or os.path.exists('/proc/1/cgroup')
+        """Check if running inside Docker container.
+
+        /proc/1/cgroup exists on every Linux host; its mere existence is not
+        evidence of a container.  The file content must name a container
+        runtime, otherwise bare-metal Linux was misdetected as Docker and
+        all data paths resolved to /app.
+        """
+        if os.path.exists('/.dockerenv'):
+            return True
+        try:
+            with open('/proc/1/cgroup', encoding='utf-8', errors='ignore') as f:
+                cgroup = f.read()
+        except OSError:
+            return False
+        return 'docker' in cgroup or 'containerd' in cgroup or 'kubepods' in cgroup
     
     @staticmethod
     def get_base_data_dir() -> Path:

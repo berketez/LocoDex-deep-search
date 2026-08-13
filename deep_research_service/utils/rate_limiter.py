@@ -45,21 +45,25 @@ class DomainRateLimiter:
         if delay is None:
             delay = self.default_delay
 
-        async with self._lock:
-            now = time.monotonic()
-            last = self._last_request.get(domain, 0.0)
-            elapsed = now - last
+        # Uyku kilit DIŞINDA yapılır: kilit altında uyumak, bir domain'in
+        # beklemesinin tüm diğer domain'lere yapılan istekleri de durdurması
+        # demekti. Uyandıktan sonra süre yeniden kontrol edilir; aynı domain'i
+        # bekleyen birden çok görev sırayla geçer.
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                last = self._last_request.get(domain, 0.0)
+                remaining = delay - (now - last)
+                if remaining <= 0:
+                    self._last_request[domain] = now
+                    return
 
-            if elapsed < delay:
-                wait_time = delay - elapsed
-                logger.debug(
-                    "Rate limiter: sleeping %.2fs before hitting %s",
-                    wait_time,
-                    domain,
-                )
-                await asyncio.sleep(wait_time)
-
-            self._last_request[domain] = time.monotonic()
+            logger.debug(
+                "Rate limiter: sleeping %.2fs before hitting %s",
+                remaining,
+                domain,
+            )
+            await asyncio.sleep(remaining)
 
     def reset(self, domain: str | None = None) -> None:
         """Clear tracked timestamps.

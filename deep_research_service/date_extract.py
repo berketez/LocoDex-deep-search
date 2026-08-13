@@ -237,10 +237,13 @@ def _from_meta_tags(soup, now):
 
 def _from_time_tag(soup, now):
     for tag in soup.find_all("time"):
-        dt = _sanity_check(
-            _parse_datetime_string(tag.get("datetime") or tag.get_text(" ", strip=True)),
-            now,
-        )
+        # datetime niteliği parse edilemezse etiket metni de denenir;
+        # "attr or metin" biçimi metni yalnızca nitelik hiç yokken görüyordu.
+        dt = _sanity_check(_parse_datetime_string(tag.get("datetime")), now)
+        if dt is None:
+            dt = _sanity_check(
+                _parse_datetime_string(tag.get_text(" ", strip=True)), now
+            )
         if dt:
             return dt
     return None

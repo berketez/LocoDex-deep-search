@@ -727,6 +727,10 @@ Kurallar:
                         url, timeout=timeout, headers=BROWSER_HEADERS,
                         allow_redirects=True,
                     ) as response:
+                        # Yönlendirme zinciri özel ağa (localhost, 10.x, ...)
+                        # sapmış olabilir; ilk URL kontrolü bunu görmez.
+                        if self._is_private_target(str(response.url)):
+                            return None, "gecersiz_hedef"
                         if response.status != 200:
                             if response.status in (401, 403, 429):
                                 return None, "erisim_reddedildi"

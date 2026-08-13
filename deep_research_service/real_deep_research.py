@@ -207,7 +207,7 @@ Tarafsızlık: [Tüm kaynaklar tarafsız mı?]
 
 İçerik: {content[:1000]}
 
-🎯 ÇIKARILACAK VERİLER:
+ÇIKARILACAK VERİLER:
 
 1. **SAYISAL VERİLER:**
    • Tüm sayıları ve birimlerini belirt (GB, TB, PB, kg, cm, $, %, yıl, adet, vb.)
@@ -445,7 +445,7 @@ Karşılaştırmalar: [oranlar ve trendler]
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.3, 
-                "message": f"📖 {title[:50]}... sayfası okunuyor"
+                "message": f"{title[:50]}... sayfası okunuyor"
             })
             
             async with aiohttp.ClientSession() as session:
@@ -556,7 +556,7 @@ Eğer içerik konuyla alakalı ise EVET, alakasız ise HAYIR.
         await self.websocket.send_json({
             "type": "progress", 
             "step": 0.05, 
-            "message": f"🚀 '{topic}' konusu için deep research başlıyor..."
+            "message": f"'{topic}' konusu için deep research başlıyor..."
         })
         
         # 1. Dil algılama
@@ -566,7 +566,7 @@ Eğer içerik konuyla alakalı ise EVET, alakasız ise HAYIR.
         await self.websocket.send_json({
             "type": "progress", 
             "step": 0.08, 
-            "message": f"🌐 {lang_names.get(detected_lang, 'İngilizce')} dili algılandı"
+            "message": f"{lang_names.get(detected_lang, 'İngilizce')} dili algılandı"
         })
         
         # 2. Konu analizi ve arama sorguları oluştur
@@ -622,7 +622,7 @@ SADECE ARAMA TERİMLERİNİ VER:
         await self.websocket.send_json({
             "type": "progress", 
             "step": 0.1, 
-            "message": "🧠 Araştırma stratejisi belirleniyor..."
+            "message": "Araştırma stratejisi belirleniyor..."
         })
         
         # Önce ana dilde arama sorguları al
@@ -731,7 +731,7 @@ URL: {result['url']}
 İçerik:
 {analysis_text[:2000]}
 
-🔍 SPESIFIK VERİ ÇIKARMA TALİMATLARI:
+SPESIFIK VERİ ÇIKARMA TALİMATLARI:
 
 1. **SAYISAL VERİLER (MUTLAKA BELIRT):**
    • Teknik: GB, TB, PB, MB, KB, CPU, RAM, sunucu sayısı, bant genişliği
@@ -783,13 +783,13 @@ Sadece konuyla ilgili bilgileri özetle, kaynak adını da belirt.
                     # Kullanıcıya sonuç bulduğunu göster
                     await self.websocket.send_json({
                         "type": "message", 
-                        "message": f"   ✅ Faydalı bilgi bulundu"
+                        "message": f"   Faydalı bilgi bulundu"
                     })
                 else:
                     # Sonuç bulunamadı mesajı
                     await self.websocket.send_json({
                         "type": "message", 
-                        "message": f"   ❌ Kullanılabilir bilgi bulunamadı"
+                        "message": f"   Kullanılabilir bilgi bulunamadı"
                     })
         
         # 4. Kaynakları güvenilirlik skoruna göre sırala
@@ -805,12 +805,12 @@ Sadece konuyla ilgili bilgileri özetle, kaynak adını da belirt.
         
         await self.websocket.send_json({
             "type": "message", 
-            "message": f"\n📋 Toplam {len(filtered_research_data)} güvenilir kaynak bulundu"
+            "message": f"\nToplam {len(filtered_research_data)} güvenilir kaynak bulundu"
         })
         
         await self.websocket.send_json({
             "type": "message", 
-            "message": "\n🤖 Rapor hazırlanıyor...\n"
+            "message": "\nRapor hazırlanıyor...\n"
         })
         
         # Çelişkili bilgileri tespit et
@@ -903,7 +903,7 @@ GÜVEN: Yüksek güvenilirlik skorlu kaynakları öncelendir, düşük skorlu ka
             final_prompt,
             "Sen uzman araştırmacısısın. Web araştırması sonuçlarından kapsamlı, profesyonel raporlar yazarsın.",
             max_tokens=4000,
-            system_prompt=thinking_process_prompt
+            thinking_process_prompt=thinking_process_prompt
         )
         
         # 5. Kullanılan kaynakları txt dosyasına kaydet
@@ -998,7 +998,7 @@ GÜVEN: Yüksek güvenilirlik skorlu kaynakları öncelendir, düşük skorlu ka
         
         await self.websocket.send_json({
             "type": "message", 
-            "message": "🎉 Araştırma tamamlandı! Kaynaklar txt dosyasına kaydedildi."
+            "message": "Araştırma tamamlandı! Kaynaklar txt dosyasına kaydedildi."
         })
         
         return final_report

@@ -14,10 +14,22 @@ from utils.rate_limiter import rate_limiter, extract_domain
 # altındaki eşik.
 try:
     from research_constants import RELIABILITY_THRESHOLD_10
+    from llm_client import LLMError
 except ImportError:
     from .research_constants import RELIABILITY_THRESHOLD_10
+    from .llm_client import LLMError
 
 logger = logging.getLogger(__name__)
+
+# call_local_model istisna yerine hata metni döndürür; bu metinler rapor
+# gövdesi sanılıp önbelleğe yazılıyordu. Rapor bu öneklerle başlıyorsa
+# araştırma başarısızdır ve LLMError yükseltilir.
+_MODEL_ERROR_PREFIXES = (
+    "Ollama hatası",
+    "LM Studio hatası",
+    "Model bağlantı hatası",
+    "Hem LM Studio hem Ollama",
+)
 
 class SmartMultilingualResearcher:
     """
@@ -35,6 +47,9 @@ class SmartMultilingualResearcher:
         self.websocket = websocket
         self.search_results = []
         self.research_data = []
+        # Önbellek katmanı boş koşuyu bu nitelikten anlar; koşu sonunda
+        # güvenilir kaynak listesiyle doldurulur.
+        self.sources = []
         self.query_language = "auto"
         
     async def call_local_model(self, prompt, system_prompt="", max_tokens=3000):
@@ -65,7 +80,7 @@ class SmartMultilingualResearcher:
                         await self.websocket.send_json({
                             "type": "progress", 
                             "step": 0, 
-                            "message": f"🔄 {self.model_name} modeli yükleniyor (ilk kullanımda zaman alabilir)..."
+                            "message": f"{self.model_name} modeli yükleniyor (ilk kullanımda zaman alabilir)..."
                         })
                         
                         ollama_url = f"http://{host_ip}:11434/api/generate"
@@ -189,29 +204,32 @@ class SmartMultilingualResearcher:
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.05, 
-                "message": "🔍 Soru dilini analiz ediyorum..."
+                "message": "Soru dilini analiz ediyorum..."
             })
             
-            # Basit Türkçe karakter kontrolü
+            # Basit Türkçe karakter kontrolü. Kelime kontrolü tam kelime
+            # eşleşmesiyle yapılır: alt-string araması ("ne" ⊂ "newest",
+            # "kim" ⊂ "kimchi") İngilizce soruları Türkçe sanıyordu.
             turkish_chars = re.search(r'[çğıöşüÇĞIİÖŞÜ]', text)
-            turkish_words = ['nedir', 'nasıl', 'ne', 'hangi', 'kim', 'nerede', 'niçin', 'neden', 'hakkında']
-            
-            has_turkish = turkish_chars is not None or any(word in text.lower() for word in turkish_words)
-            
+            turkish_words = {'nedir', 'nasıl', 'ne', 'hangi', 'kim', 'nerede', 'niçin', 'neden', 'hakkında'}
+            words = set(re.findall(r'\w+', text.lower(), re.UNICODE))
+
+            has_turkish = turkish_chars is not None or bool(words & turkish_words)
+
             if has_turkish:
                 self.query_language = "tr"
                 await self.websocket.send_json({
-                    "type": "progress", 
-                    "step": 0.07, 
-                    "message": "🇹🇷 Türkçe soru tespit edildi - çok dilli araştırma stratejisi hazırlanıyor"
+                    "type": "progress",
+                    "step": 0.07,
+                    "message": "Türkçe soru tespit edildi - çok dilli araştırma stratejisi hazırlanıyor"
                 })
                 return "turkish"
             else:
                 self.query_language = "en"
                 await self.websocket.send_json({
-                    "type": "progress", 
-                    "step": 0.07, 
-                    "message": "🇺🇸 İngilizce soru tespit edildi - global araştırma stratejisi hazırlanıyor"
+                    "type": "progress",
+                    "step": 0.07,
+                    "message": "İngilizce soru tespit edildi - global araştırma stratejisi hazırlanıyor"
                 })
                 return "english"
                 
@@ -225,7 +243,7 @@ class SmartMultilingualResearcher:
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.1, 
-                "message": "🧠 Akıllı arama stratejisi geliştiriliyor..."
+                "message": "Akıllı arama stratejisi geliştiriliyor..."
             })
             
             current_date = datetime.now().strftime("%d %B %Y")
@@ -297,7 +315,7 @@ Write only the queries, one per line, no explanations.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.12, 
-                "message": f"📝 {len(search_queries)} farklı arama sorgusu hazırlandı"
+                "message": f"{len(search_queries)} farklı arama sorgusu hazırlandı"
             })
             
             return search_queries[:4]  # En fazla 4 sorgu
@@ -307,82 +325,49 @@ Write only the queries, one per line, no explanations.
             return [topic]
 
     async def search_web_advanced(self, query, max_results=5):
-        """Gelişmiş web araması - Google ve DuckDuckGo hibrit"""
+        """Web araması - DuckDuckGo (ddgs)"""
         try:
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.2, 
-                "message": f"🌐 Web'de araştırma: '{query[:50]}...'"
+                "message": f"Web'de araştırma: '{query[:50]}...'"
             })
             
             import asyncio
             import concurrent.futures
             
             def sync_search():
+                # googlesearch-python yolu kaldırıldı: paket bağımlılıklardan
+                # çıkarıldı ve Google sonuçları JS olmadan zaten gelmiyordu.
                 results = []
-                
-                # Önce Google'ı dene
                 try:
-                    from googlesearch import search as google_search
-                    import requests
-                    from bs4 import BeautifulSoup
-                    
-                    google_urls = list(google_search(query, num_results=max_results, lang='en'))
-                    
-                    for url in google_urls[:max_results]:
-                        try:
-                            response = requests.get(url, timeout=5, headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            })
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            title = soup.find('title')
-                            title_text = title.text if title else url
-                            
-                            meta_desc = soup.find('meta', attrs={'name': 'description'})
-                            description = meta_desc.get('content', '') if meta_desc else ''
-                            
-                            results.append({
-                                'title': title_text,
-                                'body': description,
-                                'href': url,
-                                'source': 'Google'
-                            })
-                        except:
-                            continue
-                            
-                except ImportError:
-                    pass
-                
-                # Google yetersizse DuckDuckGo ekle
-                if len(results) < max_results:
                     try:
-                        try:
-                            from ddgs import DDGS
-                        except ImportError:
-                            from duckduckgo_search import DDGS
-                        ddgs = DDGS()
-                        ddg_results = list(ddgs.text(query, max_results=max_results, region='us-en'))
-                        
-                        for result in ddg_results:
-                            if len(results) >= max_results:
-                                break
-                                
-                            title = result.get('title', '').lower()
-                            body = result.get('body', '').lower()
-                            url = result.get('href', '').lower()
-                            
-                            # Çince karakterleri filtrele
-                            chinese_pattern = r'[\u4e00-\u9fff]'
-                            if (re.search(chinese_pattern, title) or 
-                                re.search(chinese_pattern, body) or
-                                any(site in url for site in ['zhihu.com', 'baidu.com', 'weibo.com'])):
-                                continue
-                            
-                            result['source'] = 'DuckDuckGo'
-                            results.append(result)
-                    except:
-                        pass
-                
+                        from ddgs import DDGS
+                    except ImportError:
+                        from duckduckgo_search import DDGS
+                    ddgs = DDGS()
+                    ddg_results = list(ddgs.text(query, max_results=max_results, region='us-en'))
+
+                    for result in ddg_results:
+                        if len(results) >= max_results:
+                            break
+
+                        title = result.get('title', '').lower()
+                        body = result.get('body', '').lower()
+                        url = result.get('href', '').lower()
+
+                        # Çince karakterleri filtrele
+                        chinese_pattern = r'[\u4e00-\u9fff]'
+                        if (re.search(chinese_pattern, title) or
+                            re.search(chinese_pattern, body) or
+                            any(site in url for site in ['zhihu.com', 'baidu.com', 'weibo.com'])):
+                            continue
+
+                        result['source'] = 'DuckDuckGo'
+                        results.append(result)
+                except Exception as e:
+                    logger.warning(f"DDG araması başarısız ({query!r}): {e}")
+
                 return results
             
             # Sync search'ü thread pool'da çalıştır
@@ -403,7 +388,7 @@ Write only the queries, one per line, no explanations.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.3, 
-                "message": f"📖 İçerik analiz ediliyor: {title[:40]}..."
+                "message": f"İçerik analiz ediliyor: {title[:40]}..."
             })
             
             async with aiohttp.ClientSession() as session:
@@ -491,7 +476,7 @@ Format: "Puan: X/10 - Gerekçe"
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.7, 
-                "message": "🔄 Araştırma eksikliklerini tespit ediyorum..."
+                "message": "Araştırma eksikliklerini tespit ediyorum..."
             })
             
             # Mevcut araştırma verilerini özetle
@@ -544,7 +529,7 @@ Sadece en önemli 2-3 eksik alanı belirt.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.01, 
-                "message": f"🚀 '{topic}' için akıllı çok dilli araştırma başlıyor..."
+                "message": f"'{topic}' için akıllı çok dilli araştırma başlıyor..."
             })
             
             # 1. Dil algılama
@@ -559,7 +544,7 @@ Sadece en önemli 2-3 eksik alanı belirt.
                 await self.websocket.send_json({
                     "type": "progress", 
                     "step": 0.15 + (i * 0.15), 
-                    "message": f"🔍 Arama {i+1}/{len(queries)}: {query[:50]}..."
+                    "message": f"Arama {i+1}/{len(queries)}: {query[:50]}..."
                 })
                 
                 results = await self.search_web_advanced(query, max_results=4)
@@ -573,7 +558,7 @@ Sadece en önemli 2-3 eksik alanı belirt.
                 await self.websocket.send_json({
                     "type": "progress", 
                     "step": 0.5 + (i * 0.03), 
-                    "message": f"📊 Kaynak analizi: {result['title'][:30]}..."
+                    "message": f"Kaynak analizi: {result['title'][:30]}..."
                 })
                 
                 # İçerik çek
@@ -610,6 +595,10 @@ Sadece konuyla ilgili önemli bilgileri özetle.
                             'search_source': result.get('source', 'Unknown')
                         })
             
+            # Önbellek katmanı boş koşuyu bu nitelikten anlar (bkz. cli/server:
+            # kaynaksız rapor 24 saat önbelleğe yazılmaz).
+            self.sources = research_data
+
             # 5. Eksiklik analizi (opsiyonel)
             gaps = await self.iterative_research_analysis(topic, research_data)
             
@@ -617,7 +606,7 @@ Sadece konuyla ilgili önemli bilgileri özetle.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.9, 
-                "message": "📝 Kapsamlı araştırma raporu hazırlanıyor..."
+                "message": "Kapsamlı araştırma raporu hazırlanıyor..."
             })
             
             report = await self.generate_comprehensive_report(topic, research_data, language, gaps)
@@ -629,14 +618,18 @@ Sadece konuyla ilgili önemli bilgileri özetle.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 1.0, 
-                "message": f"✅ Araştırma tamamlandı! ({duration:.1f}s, {len(research_data)} kaynak)"
+                "message": f"Araştırma tamamlandı! ({duration:.1f}s, {len(research_data)} kaynak)"
             })
             
             return report
-            
+
+        except LLMError:
+            raise
         except Exception as e:
+            # Hata metnini rapor gibi döndürmek onu önbelleğe ve stdout'a
+            # "başarılı sonuç" olarak taşıyordu; istisna yükseltilir.
             logger.error(f"Research process error: {e}")
-            return f"Araştırma hatası: {str(e)}"
+            raise LLMError(f"Araştırma hatası: {e}") from e
 
     async def generate_comprehensive_report(self, topic, research_data, language, gaps):
         """Kapsamlı araştırma raporu oluşturur"""
@@ -700,7 +693,11 @@ Focus on current information as of {current_date}.
                 "Sen uzman araştırmacısısın. Web araştırması sonuçlarından kapsamlı, profesyonel raporlar yazarsın.",
                 max_tokens=5000
             )
-            
+            # call_local_model hata metnini string olarak döndürür; bunu rapor
+            # gövdesi yapmak hatayı önbelleğe "başarılı sonuç" diye taşıyordu.
+            if final_report.startswith(_MODEL_ERROR_PREFIXES):
+                raise LLMError(final_report)
+
             # Rapor başlığı ve meta bilgileri
             header = f"""# Akıllı Çok Dilli Araştırma: {topic}
 
@@ -709,7 +706,7 @@ Focus on current information as of {current_date}.
 **Kullanılan Model:** {self.model_name} ({self.model_source})
 **Toplam Kaynak:** {len(research_data)} güvenilir web kaynağı
 **Araştırma Dili:** {language.title()}
-**Arama Motorları:** Google, DuckDuckGo
+**Arama Motorları:** DuckDuckGo
 
 ---
 
@@ -721,16 +718,18 @@ Focus on current information as of {current_date}.
                 for item in research_data
             ])
             
-            full_report = header + final_report + f"\n\n## 📚 Kaynaklar\n\n{source_list}"
+            full_report = header + final_report + f"\n\n## Kaynaklar\n\n{source_list}"
             
             # Dosya kaydetme
             await self.save_research_report(topic, full_report)
             
             return full_report
-            
+
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"Report generation error: {e}")
-            return f"Rapor oluşturma hatası: {str(e)}"
+            raise LLMError(f"Rapor oluşturma hatası: {e}") from e
 
     async def save_research_report(self, topic, report):
         """Araştırma raporunu dosyaya kaydeder"""
@@ -738,7 +737,7 @@ Focus on current information as of {current_date}.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.95, 
-                "message": "💾 Rapor kaydediliyor..."
+                "message": "Rapor kaydediliyor..."
             })
             
             import os
@@ -762,7 +761,7 @@ Focus on current information as of {current_date}.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.98, 
-                "message": f"✅ Rapor masaüstüne kaydedildi: {filename}"
+                "message": f"Rapor masaüstüne kaydedildi: {filename}"
             })
             
         except Exception as e:
@@ -770,5 +769,5 @@ Focus on current information as of {current_date}.
             await self.websocket.send_json({
                 "type": "progress", 
                 "step": 0.98, 
-                "message": f"⚠️ Dosya kaydetme hatası: {str(e)}"
+                "message": f"Dosya kaydetme hatası: {str(e)}"
             })

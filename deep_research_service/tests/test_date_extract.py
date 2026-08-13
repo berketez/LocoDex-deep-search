@@ -218,3 +218,16 @@ class TestFreshnessScore:
         half = datetime(2026, 1, 8)  # ~180 gün önce
         score = freshness_score(half, "critical", now=NOW)
         assert score == pytest.approx(0.5, abs=0.01)
+
+
+class TestTimeTagFallback:
+    def test_bozuk_datetime_niteliginde_etiket_metnine_duser(self):
+        # datetime niteliği parse edilemiyorsa etiketin görünür metni denenir;
+        # önceki "attr or metin" biçimi metni yalnızca nitelik yokken görüyordu.
+        html = '<html><body><time datetime="son güncelleme">5 Temmuz 2026</time></body></html>'
+        soup = BeautifulSoup(html, "html.parser")
+        dt, method, conf = extract_publication_date(
+            html_soup=soup, url="", visible_text="", now=NOW
+        )
+        assert dt == datetime(2026, 7, 5)
+        assert method == "time-etiketi"

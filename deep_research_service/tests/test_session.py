@@ -121,3 +121,28 @@ class TestOturumKaydi:
         assert oturum.known_sources() == {
             "https://reuters.com/a", "https://arxiv.org/b",
         }
+
+
+class TestBaglamKaynakNumaralari:
+    def test_limit_ustu_referansli_kaynak_listeye_girer(self):
+        # 25 kaynak, bulgu 23 numaralı kaynağa dayanıyor. Liste 20 ile
+        # kısaltılırken referans verilen 23 atlanmamalı; yoksa model listede
+        # olmayan bir numaraya dayanmak zorunda kalıyordu.
+        kaynaklar = [
+            {"title": f"K{i}", "domain": f"d{i}.com", "published_at": None,
+             "url": f"https://d{i}.com"}
+            for i in range(1, 26)
+        ]
+        bulgular = [{
+            "statement": "Yirmi üçüncü kaynağa dayanan bulgu.",
+            "confidence": 90, "supporting": [23], "contradicting": [],
+            "newest_date": None,
+        }]
+        kayit = ResearchEntry(
+            topic="k", report="r", findings=bulgular, sources=kaynaklar,
+            report_path=None, duration_sec=1.0,
+        )
+        blok = kayit.context_block()
+        assert "[23] K23" in blok
+        assert "[20] K20" in blok        # limit içi kaynaklar duruyor
+        assert "[25] K25" not in blok    # limit üstü ve referanssız
